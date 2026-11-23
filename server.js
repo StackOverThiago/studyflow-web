@@ -275,7 +275,7 @@ app.use((error, _req, res, _next) => {
 
 module.exports = app;
 
-if (require.main === module && !process.env.VERCEL) {
+if (require.main === module) {
   app.listen(PORT, "127.0.0.1", () => {
     console.log(`Studyflow is ready at http://localhost:${PORT}`);
     console.log(process.env.OPENAI_API_KEY ? "AI mode: configured" : "AI mode: local demo fallback (no API key configured)");
