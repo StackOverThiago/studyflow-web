@@ -1,6 +1,10 @@
 "use strict";
 
-const STORAGE_KEY = "studyflow.topics.v1";
+const LEGACY_STORAGE_KEY = "studyflow.topics.v1";
+const MODULES_STORAGE_KEY = "studyflow.modules.v2";
+const PROFILE_KEY = "studyflow.profile.v1";
+const STUDENT_PROFILE_KEY = "studyflow.student-profile.v1";
+
 const PALETTE = [
   { background: "#edf4ee", color: "#5b8b65", dot: "#79a984" },
   { background: "#f2eff8", color: "#8873ac", dot: "#a18bc7" },
@@ -8,17 +12,25 @@ const PALETTE = [
   { background: "#eef2f8", color: "#6d83a4", dot: "#8da2bf" },
   { background: "#f8eff1", color: "#a47481", dot: "#c48d9b" }
 ];
-const SUBJECTS = [
-  { name: "Biology", terms: ["biology", "cell", "cells", "dna", "rna", "photosynthesis", "ecosystem", "mitosis", "meiosis", "organism", "genetics", "evolution", "enzyme", "chloroplast", "mitochondria"] },
-  { name: "Chemistry", terms: ["chemistry", "chemical", "atom", "atoms", "molecule", "molecules", "element", "elements", "compound", "reaction", "bond", "periodic table", "acid", "base", "electron", "proton"] },
-  { name: "Physics", terms: ["physics", "force", "velocity", "acceleration", "gravity", "energy", "momentum", "motion", "newton", "wave", "electricity", "voltage", "mass", "friction"] },
-  { name: "Psychology", terms: ["psychology", "behavior", "behaviour", "cognitive", "memory", "conditioning", "reinforcement", "development", "attachment", "neuron", "perception", "consciousness"] },
-  { name: "History", terms: ["history", "revolution", "empire", "treaty", "war", "century", "colonial", "civilization", "civilisation", "independence", "monarchy", "industrialization"] },
-  { name: "Economics", terms: ["economics", "economy", "supply", "demand", "inflation", "gdp", "market", "consumer", "opportunity cost", "scarcity", "fiscal", "monetary"] },
-  { name: "Computer science", terms: ["computer science", "algorithm", "programming", "code", "software", "database", "binary", "function", "variable", "data structure", "network", "recursion"] },
-  { name: "Mathematics", terms: ["mathematics", "algebra", "equation", "equations", "geometry", "calculus", "derivative", "integral", "probability", "theorem", "fraction", "quadratic"] },
-  { name: "Literature", terms: ["literature", "novel", "poem", "poetry", "metaphor", "narrative", "character", "theme", "protagonist", "symbolism", "shakespeare"] }
-];
+
+const STUDY_PRESETS = {
+  "exam-cram": {
+    label: "Exam Cram",
+    goal: "Prioritize high-yield concepts, common misconceptions, and exam-style retrieval practice."
+  },
+  "lecture-summary": {
+    label: "Deep Concept Mastery",
+    goal: "Build thorough conceptual understanding with worked examples and clear explanations."
+  },
+  "past-paper-prep": {
+    label: "Past-Paper Prep",
+    goal: "Focus on exam-style questions, marking criteria, and application grounded in course notes."
+  },
+  "assignment-rubric": {
+    label: "Assignment Rubric",
+    goal: "Organize concepts around the assignment rubric and highlight relevant evidence in my notes."
+  }
+};
 
 const elements = {
   textarea: document.querySelector("#notes-input"),
@@ -47,28 +59,7 @@ const elements = {
   workspaceImportFile: document.querySelector("#workspace-import-file")
 };
 
-const PROFILE_KEY = "studyflow.profile.v1";
-const STUDENT_PROFILE_KEY = "studyflow.student-profile.v1";
-const STUDY_PRESETS = {
-  "exam-cram": {
-    label: "Exam Cram",
-    goal: "Prioritize high-yield concepts and concise retrieval practice for an upcoming exam."
-  },
-  "lecture-summary": {
-    label: "Lecture Summary",
-    goal: "Create a structured, concise summary of lecture notes with key terms and takeaways."
-  },
-  "past-paper-prep": {
-    label: "Past-Paper Prep",
-    goal: "Use past-paper questions and exam-style practice, grounding answers in my course notes."
-  },
-  "assignment-rubric": {
-    label: "Assignment Rubric",
-    goal: "Organize concepts around the assignment rubric and highlight relevant evidence in my notes."
-  }
-};
-
-let topics = loadTopics();
+let modules = loadModules();
 let activeTopicId = null;
 let toastTimer;
 let aiAvailable = false;
@@ -123,8 +114,7 @@ function loadStudentProfile() {
       studyGoal: typeof saved.studyGoal === "string" ? saved.studyGoal : "",
       preset: typeof saved.preset === "string" && Object.prototype.hasOwnProperty.call(STUDY_PRESETS, saved.preset) ? saved.preset : ""
     };
-  } catch (error) {
-    console.error("Could not load the student profile.", error);
+  } catch (_error) {
     localStorage.removeItem(STUDENT_PROFILE_KEY);
     return { firstName: "", degree: "", studyGoal: "", preset: "" };
   }
@@ -166,60 +156,179 @@ async function requestApi(endpoint, body) {
   return data;
 }
 
+function allTopics() {
+  return modules.flatMap(mod => (mod.topics || []).map(topic => ({ ...topic, moduleMeta: mod })));
+}
+
+function findTopicEntry(topicId) {
+  for (const mod of modules) {
+    const topic = (mod.topics || []).find(t => t.id === topicId);
+    if (topic) return { module: mod, topic };
+  }
+  return null;
+}
+
+function getTopic(topicId) {
+  const entry = findTopicEntry(topicId);
+  if (!entry) return null;
+  return { ...entry.topic, moduleMeta: entry.module };
+}
+
 function topicContext(topic) {
-  return topic.sections.map(section => `SECTION: ${section.title}\n${section.text}`).join("\n\n");
+  return (topic.sections || []).map(section => `SECTION: ${section.title}\n${section.text}`).join("\n\n");
 }
 
-function createAiTopics(groups, sourceMode) {
-  const stamp = Date.now();
-  return groups.map((group, groupIndex) => ({
-    id: `${stamp}-${groupIndex}-${Math.random().toString(36).slice(2, 8)}`,
-    title: group.title || `Topic ${groupIndex + 1}`,
-    category: group.category || group.title || "Your notes",
-    color: PALETTE[(topics.length + groupIndex) % PALETTE.length],
-    createdAt: new Date().toISOString(),
-    sourceMode,
-    sections: (group.sections || []).map((section, sectionIndex) => ({
-      id: `${stamp}-${groupIndex}-${sectionIndex}`,
-      title: section.title || `Section ${sectionIndex + 1}`,
-      text: section.text || "",
-      keyPoints: Array.isArray(section.keyPoints) && section.keyPoints.length
-        ? section.keyPoints
-        : getKeyPoints(section.text || "")
-    })).filter(section => section.text)
-  })).filter(topic => topic.sections.length);
+function createDefaultMastery() {
+  return {
+    state: "Not started",
+    lessonCompleted: false,
+    attempts: 0,
+    correct: 0,
+    easeFactor: 2.5,
+    intervalDays: 0,
+    lastReviewDate: null,
+    nextReviewDate: null,
+    weakAreas: []
+  };
 }
 
-function loadTopics() {
+function loadModules() {
   try {
-    const saved = localStorage.getItem(STORAGE_KEY);
-    if (!saved) return [];
-    const parsed = JSON.parse(saved);
-    if (!Array.isArray(parsed)) throw new Error("Saved topics are not a list.");
-    return parsed.filter(topic =>
-      topic &&
-      typeof topic.id === "string" &&
-      typeof topic.title === "string" &&
-      Array.isArray(topic.sections)
-    );
+    const savedV2 = localStorage.getItem(MODULES_STORAGE_KEY);
+    if (savedV2) {
+      const parsed = JSON.parse(savedV2);
+      if (Array.isArray(parsed)) {
+        return parsed.filter(m => m && typeof m.id === "string" && Array.isArray(m.topics));
+      }
+    }
+
+    const legacyRaw = localStorage.getItem(LEGACY_STORAGE_KEY);
+    if (legacyRaw) {
+      const legacyTopics = JSON.parse(legacyRaw);
+      if (Array.isArray(legacyTopics) && legacyTopics.length) {
+        const migratedModule = {
+          id: `mod-migrated-${Date.now()}`,
+          name: legacyTopics[0]?.module?.name || "Imported Study Notes",
+          discipline: legacyTopics[0]?.module?.discipline || "General Academic",
+          knowledgeTypes: ["Conceptual", "Applied"],
+          learningOutcomes: [],
+          prerequisites: [],
+          topicRelationships: "",
+          gapsAndAmbiguities: [],
+          createdAt: new Date().toISOString(),
+          sourceMode: "Migrated v1",
+          topics: legacyTopics.map((t, idx) => ({
+            id: t.id || `top-${Date.now()}-${idx}`,
+            title: t.title || `Topic ${idx + 1}`,
+            order: idx + 1,
+            subtopics: Array.isArray(t.subtopics) ? t.subtopics : [],
+            prerequisites: Array.isArray(t.prerequisites) ? t.prerequisites : [],
+            knowledgeTypes: ["Conceptual"],
+            sourceReferences: Array.isArray(t.sourceReferences) ? t.sourceReferences : (t.sections || []).map(s => s.title),
+            color: t.color || PALETTE[idx % PALETTE.length],
+            sourceMode: t.sourceMode || "Saved notes",
+            sections: Array.isArray(t.sections) ? t.sections : [],
+            lesson: null,
+            flashcards: [],
+            questionBank: [],
+            mastery: createDefaultMastery()
+          }))
+        };
+        const initial = [migratedModule];
+        localStorage.setItem(MODULES_STORAGE_KEY, JSON.stringify(initial));
+        return initial;
+      }
+    }
+    return [];
   } catch (error) {
-    console.error("Could not load saved Studyflow notes.", error);
-    window.addEventListener("DOMContentLoaded", () => showToast("Saved notes could not be loaded. You can still add new notes."));
+    console.error("Could not load saved Studyflow modules.", error);
     return [];
   }
 }
 
-function persistTopics() {
+function persistModules() {
   try {
-    localStorage.setItem(STORAGE_KEY, JSON.stringify(topics));
+    localStorage.setItem(MODULES_STORAGE_KEY, JSON.stringify(modules));
     elements.savedStatus.innerHTML = '<span class="status-dot"></span> All changes saved';
     return true;
   } catch (error) {
-    console.error("Could not save Studyflow notes.", error);
+    console.error("Could not save Studyflow modules.", error);
     elements.savedStatus.textContent = "Could not save changes";
-    showToast("Could not save notes on this device. Check your browser storage settings.");
+    showToast("Could not save notes on this device. Check browser storage space.");
     return false;
   }
+}
+
+function createLocalModuleFallback(notes, sections) {
+  const firstTitle = sections[0]?.title || "Submitted Module";
+  const courseName = getCourseProfile().course || firstTitle;
+  const stamp = Date.now();
+  return {
+    id: `mod-${stamp}`,
+    name: courseName,
+    discipline: "General Academic (Local Mode)",
+    knowledgeTypes: ["Conceptual", "Applied"],
+    learningOutcomes: sections.slice(0, 5).map(s => `Understand and apply key principles of ${s.title}`),
+    prerequisites: [],
+    topicRelationships: "Topics are ordered sequentially based on your submitted notes.",
+    gapsAndAmbiguities: ["Running in local offline mode: AI analysis is unavailable."],
+    createdAt: new Date().toISOString(),
+    sourceMode: "Local demo",
+    topics: [{
+      id: `top-${stamp}-0`,
+      title: courseName,
+      order: 1,
+      subtopics: sections.map(s => s.title),
+      prerequisites: [],
+      knowledgeTypes: ["Conceptual"],
+      sourceReferences: sections.map(s => s.title),
+      color: PALETTE[modules.length % PALETTE.length],
+      sourceMode: "Local demo",
+      sections: sections.map((sec, idx) => ({
+        id: `sec-${stamp}-${idx}`,
+        title: sec.title,
+        text: sec.text,
+        keyPoints: getKeyPoints(sec.text)
+      })),
+      lesson: null,
+      flashcards: [],
+      questionBank: [],
+      mastery: createDefaultMastery()
+    }]
+  };
+}
+
+function createLocalLessonFallback(topic, moduleMeta) {
+  const sections = topic.sections || [];
+  const allPoints = sections.flatMap(s => s.keyPoints || []).filter(Boolean);
+  return {
+    teachingApproach: `Structured local walkthrough for ${moduleMeta?.discipline || "academic"} study based directly on your notes.`,
+    learningObjectives: allPoints.slice(0, 5).map(p => `Understand and explain: ${p}`),
+    introduction: `This lesson covers ${topic.title} within ${moduleMeta?.name || "your module"}.`,
+    foundationalKnowledge: topic.prerequisites || [],
+    coreConcepts: sections.map(sec => ({
+      title: sec.title,
+      explanation: sec.text,
+      keyTakeaway: (sec.keyPoints && sec.keyPoints[0]) || sec.title
+    })),
+    terminology: [],
+    stepByStepProcesses: [],
+    workedExamples: [],
+    diagramsTablesCode: [],
+    realWorldApplications: [],
+    advantagesAndLimitations: { advantages: [], disadvantages: [], limitations: [] },
+    comparisons: [],
+    commonMisconceptions: [],
+    practiceExercises: [],
+    examStyleQuestions: [],
+    knowledgeChecks: allPoints.slice(0, 4).map(pt => ({
+      question: `Explain: "${pt.slice(0, 90)}${pt.length > 90 ? "…" : ""}"`,
+      answer: pt
+    })),
+    recap: allPoints.length ? `Core takeaways: ${allPoints.slice(0, 4).join(" · ")}.` : `Review ${topic.title}.`,
+    sourceLimitations: ["Generated in local offline mode without AI synthesis."],
+    sourceReferences: sections.map(s => s.title)
+  };
 }
 
 function escapeHtml(value) {
@@ -232,7 +341,22 @@ function escapeHtml(value) {
   })[character]);
 }
 
-function showToast(message, duration = 3200) {
+function formatRichText(text) {
+  return String(text || "")
+    .split(/\n{2,}/)
+    .map(para => para.trim())
+    .filter(Boolean)
+    .map(para => {
+      let safe = escapeHtml(para);
+      safe = safe.replace(/\*\*(.+?)\*\*/g, "<strong>$1</strong>");
+      safe = safe.replace(/`([^`]+)`/g, "<code>$1</code>");
+      safe = safe.replace(/\n/g, "<br>");
+      return `<p style="margin: 0 0 0.75rem 0; line-height: 1.65;">${safe}</p>`;
+    })
+    .join("");
+}
+
+function showToast(message, duration = 3400) {
   elements.toast.textContent = message;
   elements.toast.classList.add("visible");
   window.clearTimeout(toastTimer);
@@ -261,8 +385,7 @@ function looksLikeHeading(line, nextLine) {
   const isUppercase = letters.length > 2 && letters === letters.toUpperCase();
   if (isUppercase && value.length <= 60) return true;
   if (nextLine && value.length <= 60 && !/[.!?]$/.test(value) && !/^[>*•-]/.test(value)) return true;
-  const commonHeadings = /^(introduction|overview|background|key concepts?|definitions?|examples?|causes|effects|types|functions|summary|conclusion|process|structure|importance|applications?)$/i;
-  return Boolean(nextLine && commonHeadings.test(value) && !/[.!?]$/.test(value));
+  return false;
 }
 
 function splitIntoSections(notes) {
@@ -277,7 +400,6 @@ function splitIntoSections(notes) {
       const text = currentLines.join("\n").trim();
       if (text) sections.push({ title: currentTitle, text });
     };
-
     lines.forEach((line, index) => {
       if (looksLikeHeading(line, nextTextLine(index))) {
         saveSection();
@@ -291,118 +413,39 @@ function splitIntoSections(notes) {
     return sections;
   }
 
-  const paragraphs = notes
-    .split(/\n\s*\n/)
-    .map(paragraph => paragraph.trim())
-    .filter(Boolean);
-  const chunks = paragraphs.length > 1
-    ? paragraphs
-    : splitSentences(notes).reduce((groups, sentence, index) => {
-      const groupIndex = Math.floor(index / 4);
-      if (!groups[groupIndex]) groups[groupIndex] = [];
-      groups[groupIndex].push(sentence);
-      return groups;
-    }, []).map(group => group.join(" "));
-
-  return chunks.map((text, index) => ({
-    title: getSectionTitle(text, index),
+  const paragraphs = notes.split(/\n\s*\n/).map(p => p.trim()).filter(Boolean);
+  return paragraphs.map((text, index) => ({
+    title: text.split("\n")[0].slice(0, 50) || `Section ${index + 1}`,
     text
   }));
 }
 
 function splitSentences(text) {
-  return text.replace(/\r/g, " ").split(/(?<=[.!?])\s+(?=[A-Z0-9])/).map(sentence => sentence.trim()).filter(Boolean);
-}
-
-function getSectionTitle(text, index) {
-  const firstLine = text.split("\n").map(cleanLine).find(Boolean) || "";
-  const sentence = splitSentences(firstLine)[0] || firstLine;
-  const compact = sentence.replace(/[.!?]+$/, "").trim();
-  if (compact.length <= 49) return compact || `Key idea ${index + 1}`;
-  const words = compact.split(/\s+/).slice(0, 7).join(" ");
-  return `${words}…`;
-}
-
-function findSubject(text) {
-  const normalized = text.toLowerCase();
-  let best = null;
-  let bestScore = 0;
-  SUBJECTS.forEach(subject => {
-    const score = subject.terms.reduce((total, term) => {
-      const escaped = term.replace(/[.*+?^${}()|[\]\\]/g, "\\$&");
-      const matches = normalized.match(new RegExp(`\\b${escaped}\\b`, "g"));
-      return total + (matches ? matches.length : 0);
-    }, 0);
-    if (score > bestScore) {
-      bestScore = score;
-      best = subject.name;
-    }
-  });
-  return best;
-}
-
-function inferTitle(section, index) {
-  if (section.title && !/^key idea \d+$/i.test(section.title) && section.title !== "Overview") return section.title;
-  const firstLine = section.text.split("\n").map(cleanLine).find(Boolean) || "";
-  const words = firstLine.replace(/[.!?]+$/, "").split(/\s+/).filter(Boolean).slice(0, 5);
-  return words.length ? words.join(" ") : `Topic ${index + 1}`;
-}
-
-function makeTopicGroups(sections, notes) {
-  const overallSubject = findSubject(notes);
-  const groups = new Map();
-  sections.forEach((section, index) => {
-    const category = findSubject(`${section.title} ${section.text}`) || overallSubject || "Your notes";
-    if (!groups.has(category)) groups.set(category, []);
-    groups.get(category).push({
-      id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-      title: inferTitle(section, index),
-      text: section.text,
-      keyPoints: getKeyPoints(section.text)
-    });
-  });
-
-  const topicTitle = category => {
-    if (category !== "Your notes") return category;
-    const firstSection = sections[0];
-    if (!firstSection) return "Your notes";
-    const title = inferTitle(firstSection, 0);
-    return title.length > 35 ? `${title.slice(0, 32).trimEnd()}…` : title;
-  };
-
-  return Array.from(groups, ([category, groupedSections], index) => ({
-    id: `${Date.now()}-${index}-${Math.random().toString(36).slice(2, 8)}`,
-    title: topicTitle(category),
-    category,
-    color: PALETTE[index % PALETTE.length],
-    createdAt: new Date().toISOString(),
-    sections: groupedSections
-  }));
+  return text.replace(/\r/g, " ").split(/(?<=[.!?])\s+(?=[A-Z0-9])/).map(s => s.trim()).filter(Boolean);
 }
 
 function getKeyPoints(text) {
   const lines = text.split(/\n/).map(cleanLine).filter(Boolean);
   const candidates = lines.length > 1 ? lines : splitSentences(text);
-  const points = candidates
-    .map(point => point.replace(/\s+/g, " ").trim())
-    .filter(point => point.length > 8)
-    .slice(0, 5);
+  const points = candidates.map(p => p.replace(/\s+/g, " ").trim()).filter(p => p.length > 8).slice(0, 5);
   return points.length ? points : [text.trim()];
 }
 
 function renderTopics() {
+  const topicsList = allTopics();
   elements.topicNav.innerHTML = "";
-  if (!topics.length) {
-    elements.topicNav.innerHTML = '<p class="sidebar-empty">Your topics will show up here.</p>';
+  if (!topicsList.length) {
+    elements.topicNav.innerHTML = '<p class="sidebar-empty">Your module topics will show up here.</p>';
   } else {
-    topics.slice().reverse().forEach(topic => {
+    topicsList.slice().reverse().forEach(topic => {
       const row = document.createElement("div");
       row.className = "topic-link-row";
       const openButton = document.createElement("button");
       openButton.type = "button";
       openButton.className = `topic-link${activeTopicId === topic.id ? " selected" : ""}`;
       openButton.dataset.topicId = topic.id;
-      openButton.innerHTML = `<span class="topic-dot" style="background:${escapeHtml(topic.color?.dot || PALETTE[0].dot)}"></span><span class="topic-link-label">${escapeHtml(topic.title)}</span>`;
+      const lessonReady = topic.lesson ? " · Lesson ready" : "";
+      openButton.innerHTML = `<span class="topic-dot" style="background:${escapeHtml(topic.color?.dot || PALETTE[0].dot)}"></span><span class="topic-link-label">${escapeHtml(topic.title)}<small style="display:block;opacity:0.7;font-size:0.72rem;">${escapeHtml(topic.moduleMeta?.name || "")}${lessonReady}</small></span>`;
       const deleteButton = document.createElement("button");
       deleteButton.type = "button";
       deleteButton.className = "topic-delete";
@@ -415,12 +458,13 @@ function renderTopics() {
       elements.topicNav.append(row);
     });
   }
-  elements.topicCount.textContent = String(topics.length);
+  elements.topicCount.textContent = String(topicsList.length);
   renderPath();
 }
 
 function renderPath() {
-  if (!topics.length) {
+  const topicsList = allTopics();
+  if (!topicsList.length) {
     elements.pathStatus.classList.remove("ready");
     elements.pathStatus.innerHTML = "<span></span> ADD NOTES TO START";
     elements.pathContent.className = "path-content";
@@ -431,53 +475,71 @@ function renderPath() {
         <span class="orbit-dot dot-a"></span><span class="orbit-dot dot-b"></span><span class="orbit-dot dot-c"></span>
       </div>
       <h3>A little clarity goes<br> a long way.</h3>
-      <p>Your class materials become clear topics, key ideas, and practice you can return to.</p>
-      <div class="empty-path-tags"><span>Topics</span><i>·</i><span>Key ideas</span><i>·</i><span>Quick quiz</span></div>`;
+      <p>Submit any academic module or lecture notes. Studyflow identifies the discipline, maps prerequisites, and builds full interactive lessons.</p>
+      <div class="empty-path-tags"><span>Dynamic recognition</span><i>·</i><span>Full lessons</span><i>·</i><span>AI Tutor & Cards</span></div>`;
     return;
   }
 
-  const sectionCount = topics.reduce((sum, topic) => sum + topic.sections.length, 0);
-  const latest = topics[topics.length - 1];
+  const latestModule = modules[modules.length - 1];
+  const latestTopic = latestModule.topics[0] || topicsList[topicsList.length - 1];
+  const knowledgeBadges = (latestModule.knowledgeTypes || [])
+    .map(kt => `<span class="source-pill" style="margin-right:4px;">${escapeHtml(kt)}</span>`)
+    .join("");
+  const gapsMarkup = (latestModule.gapsAndAmbiguities || []).length
+    ? `<div style="margin-top:0.65rem;padding:0.6rem 0.75rem;border-radius:10px;background:#fbf1e9;color:#7a4b2a;font-size:0.82rem;">
+        <strong>Detected source gaps:</strong> ${escapeHtml(latestModule.gapsAndAmbiguities.join(" · "))}
+       </div>`
+    : "";
+
   elements.pathStatus.classList.add("ready");
-  elements.pathStatus.innerHTML = "<span></span> READY TO EXPLORE";
+  elements.pathStatus.innerHTML = "<span></span> MODULE ANALYSED";
   elements.pathContent.className = "path-content has-topics";
   elements.pathContent.innerHTML = `
-    <div class="path-topic-overview">
-      <span class="overview-icon" style="background:${escapeHtml(latest.color.background)};color:${escapeHtml(latest.color.color)}"><svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10v7H4V5.5ZM14 4h4.5A1.5 1.5 0 0 1 20 5.5V11h-6V4ZM4 15h6v5H5.5A1.5 1.5 0 0 1 4 18.5V15ZM14 14h6v4.5a1.5 1.5 0 0 1-1.5 1.5H14v-6Z"/></svg></span>
-      <span><strong>${escapeHtml(latest.title)}</strong><small>${latest.sections.length} ${latest.sections.length === 1 ? "section" : "sections"} · just added</small></span>
+    <div class="path-topic-overview" style="flex-direction:column;align-items:flex-start;gap:0.4rem;">
+      <div style="display:flex;align-items:center;gap:0.75rem;width:100%;">
+        <span class="overview-icon" style="background:${escapeHtml(latestTopic.color.background)};color:${escapeHtml(latestTopic.color.color)}"><svg viewBox="0 0 24 24"><path d="M4 5.5A1.5 1.5 0 0 1 5.5 4H10v7H4V5.5ZM14 4h4.5A1.5 1.5 0 0 1 20 5.5V11h-6V4ZM4 15h6v5H5.5A1.5 1.5 0 0 1 4 18.5V15ZM14 14h6v4.5a1.5 1.5 0 0 1-1.5 1.5H14v-6Z"/></svg></span>
+        <span>
+          <strong>${escapeHtml(latestModule.name)}</strong>
+          <small style="display:block;">${escapeHtml(latestModule.discipline)} · ${latestModule.topics.length} ${latestModule.topics.length === 1 ? "topic" : "topics"}</small>
+        </span>
+      </div>
+      <div>${knowledgeBadges}</div>
+      ${latestModule.topicRelationships ? `<p style="margin:0.25rem 0 0;font-size:0.84rem;opacity:0.85;">${escapeHtml(latestModule.topicRelationships)}</p>` : ""}
+      ${gapsMarkup}
     </div>
-    <div class="path-topic-list">${topics.slice().reverse().map(topic => `
+    <div class="path-topic-list">${topicsList.slice().reverse().map(topic => `
       <div class="path-topic-row">
         <button class="path-topic-open" type="button" data-topic-id="${escapeHtml(topic.id)}">
           <span class="topic-dot" style="background:${escapeHtml(topic.color?.dot || PALETTE[0].dot)}"></span>
           <strong>${escapeHtml(topic.title)}</strong>
-          <small>${topic.sections.length} ${topic.sections.length === 1 ? "section" : "sections"}</small>
+          <small>${topic.lesson ? "Lesson ready" : "Open to generate lesson"} · ${topic.sections.length} src</small>
           <span class="row-arrow" aria-hidden="true">›</span>
         </button>
         <button class="topic-delete" type="button" data-action="delete-topic" data-topic-id="${escapeHtml(topic.id)}" aria-label="Delete ${escapeHtml(topic.title)}" title="Delete ${escapeHtml(topic.title)}">×</button>
       </div>`).join("")}</div>
-    <div class="empty-path-tags"><span>${topics.length} ${topics.length === 1 ? "topic" : "topics"}</span><i>·</i><span>${sectionCount} sections</span><i>·</i><span>Ready to study</span></div>`;
+    <div class="empty-path-tags"><span>${modules.length} ${modules.length === 1 ? "module" : "modules"}</span><i>·</i><span>${topicsList.length} topics</span><i>·</i><span>Click any topic to learn</span></div>`;
 }
 
 function deleteTopic(topicId) {
-  const topic = getTopic(topicId);
-  if (!topic || !window.confirm(`Delete “${topic.title}” and its saved notes? This cannot be undone.`)) return;
+  const entry = findTopicEntry(topicId);
+  if (!entry || !window.confirm(`Delete “${entry.topic.title}”? This cannot be undone.`)) return;
 
-  topics = topics.filter(item => item.id !== topicId);
+  entry.module.topics = entry.module.topics.filter(t => t.id !== topicId);
+  modules = modules.filter(m => m.topics.length > 0);
   if (activeTopicId === topicId) {
     activeTopicId = null;
     elements.breadcrumb.textContent = "My library";
     closeDialog();
   }
-  const saved = persistTopics();
+  const saved = persistModules();
   renderTopics();
-  if (saved) showToast(`Deleted “${topic.title}”.`);
+  if (saved) showToast(`Deleted “${entry.topic.title}”.`);
 }
 
 async function organizeNotes() {
   const notes = elements.textarea.value.trim();
   if (!notes) {
-    showToast("Paste in some notes first, and we’ll get started.");
+    showToast("Paste in some notes or upload a file first.");
     elements.textarea.focus();
     return;
   }
@@ -485,35 +547,77 @@ async function organizeNotes() {
   const button = elements.organizeButton;
   const buttonLabel = button.querySelector("span");
   button.disabled = true;
-  buttonLabel.textContent = aiAvailable ? "Finding the shape…" : "Organizing locally…";
+  buttonLabel.textContent = aiAvailable ? "Analysing module & syllabus…" : "Organizing locally…";
   button.setAttribute("aria-busy", "true");
-  let newTopics = [];
+
+  let createdModule = null;
   let mode = "local";
   let aiError = "";
+
   try {
     if (aiAvailable) {
       try {
-        const result = await requestApi("organize", { notes, ...getProfile() });
-        newTopics = createAiTopics(result.topics || [], "AI · source notes");
-        if (newTopics.length) mode = "AI";
+        const result = await requestApi("analyze-module", { notes, ...getProfile() });
+        const stamp = Date.now();
+        const modInfo = result.module || {};
+        const baseIdx = allTopics().length;
+        createdModule = {
+          id: `mod-${stamp}`,
+          name: modInfo.name || getCourseProfile().course || "Submitted Module",
+          discipline: modInfo.discipline || "General Academic",
+          knowledgeTypes: Array.isArray(modInfo.knowledgeTypes) ? modInfo.knowledgeTypes : ["Conceptual"],
+          learningOutcomes: Array.isArray(modInfo.learningOutcomes) ? modInfo.learningOutcomes : [],
+          prerequisites: Array.isArray(modInfo.prerequisites) ? modInfo.prerequisites : [],
+          topicRelationships: modInfo.topicRelationships || "",
+          gapsAndAmbiguities: Array.isArray(modInfo.gapsAndAmbiguities) ? modInfo.gapsAndAmbiguities : [],
+          createdAt: new Date().toISOString(),
+          sourceMode: "AI · Dynamic Analysis",
+          topics: (result.topics || []).map((t, idx) => ({
+            id: `top-${stamp}-${idx}-${Math.random().toString(36).slice(2, 6)}`,
+            title: t.title || `Topic ${idx + 1}`,
+            order: t.order || idx + 1,
+            subtopics: Array.isArray(t.subtopics) ? t.subtopics : [],
+            prerequisites: Array.isArray(t.prerequisites) ? t.prerequisites : [],
+            knowledgeTypes: Array.isArray(t.knowledgeTypes) ? t.knowledgeTypes : modInfo.knowledgeTypes || [],
+            sourceReferences: Array.isArray(t.sourceReferences) ? t.sourceReferences : [],
+            color: PALETTE[(baseIdx + idx) % PALETTE.length],
+            sourceMode: "AI · Dynamic Analysis",
+            sections: (t.sections || []).map((sec, sIdx) => ({
+              id: `sec-${stamp}-${idx}-${sIdx}`,
+              title: sec.title || `Section ${sIdx + 1}`,
+              text: sec.text || "",
+              keyPoints: Array.isArray(sec.keyPoints) && sec.keyPoints.length ? sec.keyPoints : getKeyPoints(sec.text || "")
+            })).filter(s => s.text),
+            lesson: null,
+            flashcards: [],
+            questionBank: [],
+            mastery: createDefaultMastery()
+          })).filter(t => t.sections.length)
+        };
+        if (createdModule.topics.length) mode = "AI";
+        else createdModule = null;
       } catch (error) {
-        aiError = error.message || "The AI request failed.";
+        aiError = error.message || "AI module analysis failed.";
       }
     }
-    if (!newTopics.length) {
+
+    if (!createdModule) {
       mode = "local";
       const sections = splitIntoSections(notes);
-      if (!sections.length) throw new Error("We couldn’t find any note text to organize.");
-      newTopics = makeTopicGroups(sections, notes);
-      newTopics.forEach(topic => { topic.sourceMode = "Local demo"; });
+      if (!sections.length) throw new Error("We couldn’t find any readable note text to organize.");
+      createdModule = createLocalModuleFallback(notes, sections);
     }
-    topics.push(...newTopics);
-    activeTopicId = newTopics[0]?.id || null;
-    persistTopics();
+
+    modules.push(createdModule);
+    activeTopicId = createdModule.topics[0]?.id || null;
+    persistModules();
     renderTopics();
-    const sectionCount = newTopics.reduce((sum, topic) => sum + topic.sections.length, 0);
-    const message = `${newTopics.length} ${newTopics.length === 1 ? "topic" : "topics"} organized into ${sectionCount} ${sectionCount === 1 ? "section" : "sections"} · ${mode === "AI" ? "AI, grounded in your notes" : "local demo"}.${aiError ? ` AI error: ${aiError}` : ""}`;
-    showToast(message, aiError ? 12000 : 3200);
+
+    const count = createdModule.topics.length;
+    const msg = mode === "AI"
+      ? `Analysed “${createdModule.name}” (${createdModule.discipline}) into ${count} ${count === 1 ? "topic" : "topics"}. Click any topic to open its full lesson.`
+      : `Organized locally into ${count} ${count === 1 ? "topic" : "topics"}.${aiError ? ` AI error: ${aiError}` : ""}`;
+    showToast(msg, aiError ? 10000 : 4500);
   } catch (error) {
     showToast(error.message || "We couldn’t organize those notes.");
   } finally {
@@ -521,10 +625,6 @@ async function organizeNotes() {
     button.removeAttribute("aria-busy");
     buttonLabel.textContent = "Build my study guide";
   }
-}
-
-function getTopic(topicId) {
-  return topics.find(topic => topic.id === topicId);
 }
 
 function openDialog() {
@@ -544,90 +644,602 @@ function dialogFrame(kicker, content) {
   </div>`;
 }
 
-function studentProfileFromForm(form) {
-  const preset = form.elements.preset.value;
-  return {
-    firstName: form.elements.firstName.value.trim(),
-    degree: form.elements.degree.value.trim(),
-    studyGoal: form.elements.studyGoal.value.trim(),
-    preset: Object.prototype.hasOwnProperty.call(STUDY_PRESETS, preset) ? preset : ""
-  };
-}
+function renderLessonHtml(topic, lesson) {
+  const mod = topic.moduleMeta || {};
+  const blocks = [];
 
-function saveStudentProfile(profile) {
-  try {
-    localStorage.setItem(STUDENT_PROFILE_KEY, JSON.stringify(profile));
-    studentProfile = profile;
-    renderStudentProfile();
-    return true;
-  } catch (error) {
-    console.error("Could not save the student profile.", error);
-    showToast("Could not save your student profile in this browser.");
-    return false;
+  blocks.push(`
+    <div class="module-analysis" style="display:grid;grid-template-columns:repeat(auto-fit,minmax(160px,1fr));gap:0.65rem;padding:0.85rem;border-radius:12px;background:#f7f8f5;margin-bottom:1.1rem;">
+      <div><span style="font-size:0.7rem;letter-spacing:0.06em;opacity:0.7;display:block;">MODULE</span><strong>${escapeHtml(mod.name || "Module")}</strong></div>
+      <div><span style="font-size:0.7rem;letter-spacing:0.06em;opacity:0.7;display:block;">DISCIPLINE</span><strong>${escapeHtml(mod.discipline || "General Academic")}</strong></div>
+      <div><span style="font-size:0.7rem;letter-spacing:0.06em;opacity:0.7;display:block;">KNOWLEDGE TYPE</span><strong>${escapeHtml((topic.knowledgeTypes || mod.knowledgeTypes || ["Combined"]).join(", "))}</strong></div>
+    </div>
+  `);
+
+  if (lesson.teachingApproach) {
+    blocks.push(`<p style="font-size:0.84rem;font-style:italic;opacity:0.85;margin-bottom:1rem;">Pedagogical focus: ${escapeHtml(lesson.teachingApproach)}</p>`);
   }
+
+  if (lesson.learningObjectives?.length) {
+    blocks.push(`<div class="lesson-label">1. LEARNING OBJECTIVES</div><ul class="lesson-list">${lesson.learningObjectives.map(o => `<li>${escapeHtml(o)}</li>`).join("")}</ul>`);
+  }
+
+  if (lesson.introduction) {
+    blocks.push(`<div class="lesson-label">2. INTRODUCTION & CONTEXT</div><div class="lesson-block">${formatRichText(lesson.introduction)}</div>`);
+  }
+
+  const prereqs = [...new Set([...(topic.prerequisites || []), ...(lesson.foundationalKnowledge || [])])];
+  if (prereqs.length) {
+    blocks.push(`<div class="lesson-label">3. FOUNDATIONAL & PREREQUISITE CONCEPTS</div><ul class="lesson-list">${prereqs.map(p => `<li>${escapeHtml(p)}</li>`).join("")}</ul>`);
+  }
+
+  if (lesson.coreConcepts?.length) {
+    blocks.push(`<div class="lesson-label">4. CORE CONCEPTS & DETAILED EXPLANATIONS</div>`);
+    lesson.coreConcepts.forEach(concept => {
+      blocks.push(`
+        <div class="lesson-block" style="margin-bottom:1rem;padding:0.95rem 1.05rem;border-left:3px solid ${escapeHtml(topic.color?.dot || "#5b8b65")};">
+          <h3 style="margin:0 0 0.5rem 0;font-size:1.05rem;">${escapeHtml(concept.title)}</h3>
+          ${formatRichText(concept.explanation)}
+          ${concept.keyTakeaway ? `<div style="margin-top:0.5rem;font-size:0.86rem;padding:0.45rem 0.65rem;border-radius:8px;background:rgba(91,139,101,0.08);"><strong>Key takeaway:</strong> ${escapeHtml(concept.keyTakeaway)}</div>` : ""}
+        </div>
+      `);
+    });
+  }
+
+  if (lesson.terminology?.length) {
+    blocks.push(`
+      <div class="lesson-label">5. KEY TERMINOLOGY & DEFINITIONS</div>
+      <div class="lesson-table">${lesson.terminology.map(t => `<div><strong>${escapeHtml(t.term)}</strong><span>${escapeHtml(t.definition)}</span></div>`).join("")}</div>
+    `);
+  }
+
+  if (lesson.stepByStepProcesses?.length) {
+    blocks.push(`<div class="lesson-label">6. STEP-BY-STEP PROCESSES & MECHANISMS</div>`);
+    lesson.stepByStepProcesses.forEach(proc => {
+      blocks.push(`
+        <div class="lesson-block" style="margin-bottom:0.85rem;">
+          <strong>${escapeHtml(proc.title)}</strong>
+          <ol style="margin:0.5rem 0 0 1.25rem;line-height:1.6;">${proc.steps.map(s => `<li style="margin-bottom:0.35rem;">${escapeHtml(s)}</li>`).join("")}</ol>
+        </div>
+      `);
+    });
+  }
+
+  if (lesson.workedExamples?.length) {
+    blocks.push(`<div class="lesson-label">7. WORKED EXAMPLES & DEMONSTRATIONS</div>`);
+    lesson.workedExamples.forEach(ex => {
+      blocks.push(`
+        <div class="lesson-block" style="margin-bottom:0.9rem;background:#eef2f8;">
+          <strong>${escapeHtml(ex.title)}</strong>
+          ${ex.problemOrScenario ? `<div style="margin-top:0.45rem;"><em>Problem / Scenario:</em> ${formatRichText(ex.problemOrScenario)}</div>` : ""}
+          <div style="margin-top:0.45rem;"><em>Walkthrough:</em> ${formatRichText(ex.walkthrough)}</div>
+          ${ex.resultOrTakeaway ? `<div style="margin-top:0.45rem;"><strong>Result:</strong> ${escapeHtml(ex.resultOrTakeaway)}</div>` : ""}
+        </div>
+      `);
+    });
+  }
+
+  if (lesson.diagramsTablesCode?.length) {
+    blocks.push(`<div class="lesson-label">8. FORMULAS, CODE, TABLES & REFERENCE ARTIFACTS</div>`);
+    lesson.diagramsTablesCode.forEach(art => {
+      blocks.push(`
+        <div class="lesson-block" style="margin-bottom:0.9rem;">
+          <div style="display:flex;justify-content:space-between;align-items:center;margin-bottom:0.4rem;">
+            <strong>${escapeHtml(art.title)}</strong>
+            <span class="source-pill">${escapeHtml(art.type.toUpperCase())}</span>
+          </div>
+          <pre style="white-space:pre-wrap;overflow-x:auto;padding:0.75rem;border-radius:8px;background:#1e232a;color:#f4f6f8;font-size:0.84rem;line-height:1.5;">${escapeHtml(art.content)}</pre>
+          ${art.caption ? `<small style="display:block;margin-top:0.35rem;opacity:0.8;">${escapeHtml(art.caption)}</small>` : ""}
+        </div>
+      `);
+    });
+  }
+
+  if (lesson.comparisons?.length) {
+    blocks.push(`<div class="lesson-label">9. CONCEPT COMPARISONS</div>`);
+    lesson.comparisons.forEach(comp => {
+      const ths = comp.headers.map(h => `<th style="text-align:left;padding:0.5rem;border-bottom:2px solid #dde2dc;">${escapeHtml(h)}</th>`).join("");
+      const trs = comp.rows.map(row => `<tr>${row.map(cell => `<td style="padding:0.5rem;border-bottom:1px solid #ecefe9;vertical-align:top;">${escapeHtml(cell)}</td>`).join("")}</tr>`).join("");
+      blocks.push(`
+        <div class="lesson-block" style="overflow-x:auto;margin-bottom:0.9rem;">
+          <strong style="display:block;margin-bottom:0.5rem;">${escapeHtml(comp.title)}</strong>
+          <table style="width:100%;border-collapse:collapse;font-size:0.88rem;"><thead><tr>${ths}</tr></thead><tbody>${trs}</tbody></table>
+        </div>
+      `);
+    });
+  }
+
+  if (lesson.realWorldApplications?.length) {
+    blocks.push(`<div class="lesson-label">10. REAL-WORLD APPLICATIONS</div><ul class="lesson-list">${lesson.realWorldApplications.map(a => `<li>${escapeHtml(a)}</li>`).join("")}</ul>`);
+  }
+
+  const adv = lesson.advantagesAndLimitations || {};
+  if (adv.advantages?.length || adv.disadvantages?.length || adv.limitations?.length) {
+    blocks.push(`<div class="lesson-label">11. ADVANTAGES, DISADVANTAGES & LIMITATIONS</div><div class="lesson-block">`);
+    if (adv.advantages?.length) blocks.push(`<strong>Advantages</strong><ul class="lesson-list">${adv.advantages.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`);
+    if (adv.disadvantages?.length) blocks.push(`<strong>Disadvantages</strong><ul class="lesson-list">${adv.disadvantages.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`);
+    if (adv.limitations?.length) blocks.push(`<strong>Limitations / Scope</strong><ul class="lesson-list">${adv.limitations.map(x => `<li>${escapeHtml(x)}</li>`).join("")}</ul>`);
+    blocks.push(`</div>`);
+  }
+
+  if (lesson.commonMisconceptions?.length) {
+    blocks.push(`<div class="lesson-label">12. COMMON MISCONCEPTIONS & MISTAKES</div>`);
+    lesson.commonMisconceptions.forEach(m => {
+      blocks.push(`
+        <div class="lesson-block" style="margin-bottom:0.65rem;background:#f8eff1;">
+          <div><strong>Misconception:</strong> ${escapeHtml(m.misconception)}</div>
+          <div style="margin-top:0.35rem;"><strong>Correction:</strong> ${escapeHtml(m.correction)}</div>
+        </div>
+      `);
+    });
+  }
+
+  if (lesson.knowledgeChecks?.length) {
+    blocks.push(`<div class="lesson-label">13. KNOWLEDGE CHECKS</div>`);
+    lesson.knowledgeChecks.forEach((kc, idx) => {
+      blocks.push(`
+        <details class="lesson-block" style="margin-bottom:0.55rem;cursor:pointer;">
+          <summary><strong>Check ${idx + 1}:</strong> ${escapeHtml(kc.question)}</summary>
+          <div style="margin-top:0.55rem;padding-top:0.55rem;border-top:1px solid #e2e6df;">${formatRichText(kc.answer)}</div>
+        </details>
+      `);
+    });
+  }
+
+  if (lesson.practiceExercises?.length) {
+    blocks.push(`<div class="lesson-label">14. PRACTICE & PROBLEM-SOLVING EXERCISES</div>`);
+    lesson.practiceExercises.forEach((ex, idx) => {
+      blocks.push(`
+        <details class="lesson-block" style="margin-bottom:0.65rem;cursor:pointer;">
+          <summary><strong>Exercise ${idx + 1}:</strong> ${escapeHtml(ex.prompt)}</summary>
+          ${ex.hint ? `<p style="margin:0.5rem 0 0;font-size:0.86rem;"><em>Hint:</em> ${escapeHtml(ex.hint)}</p>` : ""}
+          ${ex.solution ? `<div style="margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid #e2e6df;"><strong>Solution:</strong> ${formatRichText(ex.solution)}</div>` : ""}
+        </details>
+      `);
+    });
+  }
+
+  if (lesson.examStyleQuestions?.length) {
+    blocks.push(`<div class="lesson-label">15. EXAMINATION-STYLE QUESTIONS</div>`);
+    lesson.examStyleQuestions.forEach((q, idx) => {
+      blocks.push(`
+        <details class="lesson-block" style="margin-bottom:0.65rem;cursor:pointer;">
+          <summary><strong>Q${idx + 1} [${q.marks} marks]:</strong> ${escapeHtml(q.question)}</summary>
+          <div style="margin-top:0.5rem;padding-top:0.5rem;border-top:1px solid #e2e6df;"><strong>Marking Criteria:</strong> ${formatRichText(q.markingGuidance)}</div>
+        </details>
+      `);
+    });
+  }
+
+  if (lesson.recap) {
+    blocks.push(`<div class="lesson-label">16. FINAL RECAP</div><div class="lesson-block" style="background:#edf4ee;">${formatRichText(lesson.recap)}</div>`);
+  }
+
+  if (lesson.sourceLimitations?.length) {
+    blocks.push(`<div class="lesson-label">SOURCE MATERIAL LIMITATIONS</div><ul class="lesson-list">${lesson.sourceLimitations.map(l => `<li>${escapeHtml(l)}</li>`).join("")}</ul>`);
+  }
+
+  const refs = lesson.sourceReferences?.length ? lesson.sourceReferences : topic.sections.map(s => s.title);
+  if (refs.length) {
+    blocks.push(`<div class="source-caption" style="margin-top:0.75rem;">Traced to source sections: ${escapeHtml(refs.join(" · "))}</div>`);
+  }
+
+  return blocks.join("");
 }
 
-function openStudentProfile() {
-  const presetButtons = Object.entries(STUDY_PRESETS).map(([id, preset]) => `
-    <button class="study-preset${studentProfile.preset === id ? " selected" : ""}" type="button" data-study-preset="${id}" aria-pressed="${studentProfile.preset === id}">${preset.label}</button>`).join("");
-  elements.dialogContent.innerHTML = dialogFrame("STUDENT PROFILE", `
-    <h2>Make this study space yours.</h2>
-    <p class="dialog-subtitle">No account needed. Your profile and notes stay in this browser unless you choose to export them.</p>
-    <form id="student-profile-form">
-      <div class="student-profile-grid">
-        <label>First name<input name="firstName" type="text" maxlength="60" autocomplete="given-name" placeholder="e.g. Alex"></label>
-        <label>Degree / course<input name="degree" type="text" maxlength="140" placeholder="e.g. BSc Computer Science"></label>
-        <label class="student-profile-wide">Current study goal / exam focus<textarea name="studyGoal" rows="3" maxlength="700" placeholder="e.g. Revise operating systems before Friday’s exam"></textarea></label>
-      </div>
-      <input name="preset" type="hidden">
-      <div class="preset-heading">Quick study presets</div>
-      <div class="study-preset-grid">${presetButtons}</div>
-      <div class="workspace-backup-actions">
-        <button class="button button-secondary" type="button" data-action="export-workspace">Export workspace backup (.json)</button>
-        <button class="button button-secondary" type="button" data-action="import-workspace">Import workspace backup (.json)</button>
-      </div>
-      <div class="dialog-actions">
-        <button class="button button-primary" type="submit">Save student profile</button>
-      </div>
-    </form>`);
+async function openTopic(topicId, forceRegenerate = false) {
+  const entry = findTopicEntry(topicId);
+  if (!entry) return;
+  const { module: mod, topic } = entry;
 
-  const form = elements.dialogContent.querySelector("#student-profile-form");
-  form.elements.firstName.value = studentProfile.firstName;
-  form.elements.degree.value = studentProfile.degree;
-  form.elements.studyGoal.value = studentProfile.studyGoal;
-  form.elements.preset.value = studentProfile.preset;
-  form.elements.studyGoal.addEventListener("input", () => {
-    form.elements.preset.value = "";
-    form.querySelectorAll("[data-study-preset]").forEach(button => {
-      button.classList.remove("selected");
-      button.setAttribute("aria-pressed", "false");
-    });
-  });
-  elements.dialogContent.onsubmit = event => {
-    if (!event.target.matches("#student-profile-form")) return;
-    event.preventDefault();
-    if (saveStudentProfile(studentProfileFromForm(form))) {
-      closeDialog();
-      showToast("Student profile saved.");
+  elements.dialogContent.onclick = null;
+  elements.dialogContent.onsubmit = null;
+  activeTopicId = topic.id;
+  renderTopics();
+  elements.breadcrumb.textContent = `${mod.name} / ${topic.title}`;
+
+  if (!topic.lesson || forceRegenerate) {
+    elements.dialogContent.innerHTML = dialogFrame("COMPREHENSIVE LESSON GENERATOR", `
+      <h2>Building your lesson on ${escapeHtml(topic.title)}…</h2>
+      <p class="dialog-subtitle loading-dots">Adapting explanations, examples, terminology, and checks for <strong>${escapeHtml(mod.discipline)}</strong>…</p>
+    `);
+    openDialog();
+
+    if (aiAvailable) {
+      try {
+        const result = await requestApi("generate-lesson", {
+          topicTitle: topic.title,
+          subtopics: topic.subtopics,
+          sourceContext: topicContext(topic),
+          module: {
+            name: mod.name,
+            discipline: mod.discipline,
+            knowledgeTypes: mod.knowledgeTypes
+          },
+          ...getProfile()
+        });
+        topic.lesson = result.lesson;
+        topic.sourceMode = "AI · Comprehensive Lesson";
+        persistModules();
+        renderTopics();
+      } catch (error) {
+        showToast(`Using local lesson fallback: ${error.message}`, 6000);
+        topic.lesson = createLocalLessonFallback(topic, mod);
+        persistModules();
+      }
+    } else {
+      topic.lesson = createLocalLessonFallback(topic, mod);
+      persistModules();
     }
-  };
+  }
+
+  const enrichedTopic = { ...topic, moduleMeta: mod };
+  elements.dialogContent.innerHTML = dialogFrame("STRUCTURED ACADEMIC LESSON", `
+    <h2>${escapeHtml(topic.title)}</h2>
+    <p class="dialog-subtitle">Comprehensive lesson adapted to your module material. <span class="source-pill">${escapeHtml(topic.sourceMode || "Source-grounded")}</span></p>
+    ${renderLessonHtml(enrichedTopic, topic.lesson)}
+    <div class="dialog-actions" style="margin-top:1.25rem;flex-wrap:wrap;gap:0.5rem;">
+      <button class="button button-secondary" type="button" data-action="regenerate-lesson" data-topic-id="${escapeHtml(topic.id)}">Regenerate lesson</button>
+      <button class="button button-secondary" type="button" data-action="explain" data-topic-id="${escapeHtml(topic.id)}">Deep explanation</button>
+      <button class="button button-secondary" type="button" data-action="chat" data-topic-id="${escapeHtml(topic.id)}">AI Teaching Assistant</button>
+      <button class="button button-secondary" type="button" data-action="flashcards" data-topic-id="${escapeHtml(topic.id)}">Smart Flashcards</button>
+      <button class="button button-secondary" type="button" data-action="download-study-sheet" data-topic-id="${escapeHtml(topic.id)}">Export (.md)</button>
+      <button class="button button-primary" type="button" data-action="quiz" data-topic-id="${escapeHtml(topic.id)}">Check understanding <span aria-hidden="true">→</span></button>
+    </div>`);
   openDialog();
 }
 
-function applyStudyPreset(presetId) {
-  if (!Object.prototype.hasOwnProperty.call(STUDY_PRESETS, presetId)) return;
-  const form = elements.dialogContent.querySelector("#student-profile-form");
-  if (!form) return;
-  form.elements.studyGoal.value = STUDY_PRESETS[presetId].goal;
-  form.elements.preset.value = presetId;
-  form.querySelectorAll("[data-study-preset]").forEach(button => {
-    const selected = button.dataset.studyPreset === presetId;
-    button.classList.toggle("selected", selected);
-    button.setAttribute("aria-pressed", String(selected));
-  });
-  if (saveStudentProfile(studentProfileFromForm(form))) {
-    showToast(`${STUDY_PRESETS[presetId].label} preset applied.`);
+function localSourceAnswer(topic, prompt) {
+  const terms = prompt.toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length > 3);
+  const matches = topic.sections.map(section => ({
+    section,
+    score: terms.reduce((score, term) => score + ((section.title + " " + section.text).toLowerCase().includes(term) ? 1 : 0), 0)
+  })).filter(item => item.score).sort((left, right) => right.score - left.score).slice(0, 2);
+  if (!matches.length) {
+    return "I can’t find enough information about that in the notes you shared. Add a relevant source section or enable AI mode for deeper explanation.";
   }
+  return `Here’s what your notes say:\n\n${matches.map(item => `${item.section.title}: ${item.section.keyPoints?.slice(0, 2).join(" ") || item.section.text.slice(0, 600)}`).join("\n\n")}`;
+}
+
+async function explainTopic(topicId, mode = "comprehensive") {
+  const topic = getTopic(topicId);
+  if (!topic) return;
+  elements.dialogContent.onclick = null;
+  elements.dialogContent.onsubmit = null;
+  elements.dialogContent.innerHTML = dialogFrame("DEEP PEDAGOGICAL EXPLANATION", `
+    <h2>Understanding ${escapeHtml(topic.title)}</h2>
+    <p class="dialog-subtitle">Anchored in your notes and expanded with intuition, structure, and real-world examples.</p>
+    <div style="display:flex;gap:0.45rem;flex-wrap:wrap;margin-bottom:0.85rem;">
+      <button class="button button-secondary" type="button" data-action="explain-mode" data-mode="simpler" data-topic-id="${escapeHtml(topic.id)}">Explain simpler</button>
+      <button class="button button-secondary" type="button" data-action="explain-mode" data-mode="comprehensive" data-topic-id="${escapeHtml(topic.id)}">Full breakdown</button>
+      <button class="button button-secondary" type="button" data-action="explain-mode" data-mode="advanced" data-topic-id="${escapeHtml(topic.id)}">Advanced / exam depth</button>
+    </div>
+    <div class="tutor-answer" id="tutor-answer" aria-live="polite"><span class="loading-dots">Building a ${escapeHtml(mode)} explanation…</span></div>
+    <div class="dialog-actions" style="margin-top:1rem;">
+      <button class="button button-secondary" type="button" data-action="study-lesson" data-topic-id="${escapeHtml(topic.id)}">← Back to lesson</button>
+      <button class="button button-primary" type="button" data-action="chat" data-topic-id="${escapeHtml(topic.id)}">Ask follow-up questions →</button>
+    </div>`);
+  openDialog();
+
+  const sections = topic.sections.map(section => ({ title: section.title }));
+  try {
+    let answer;
+    if (aiAvailable) {
+      try {
+        const result = await requestApi("explain", {
+          topic: topic.title,
+          mode,
+          context: topicContext(topic),
+          sections,
+          ...getProfile()
+        });
+        answer = result.answer;
+      } catch (error) {
+        answer = `${localSourceAnswer(topic, topic.title)}\n\n(Local fallback: ${error.message})`;
+      }
+    } else {
+      answer = `${localSourceAnswer(topic, topic.title)}\n\n(Local demo mode — AI is not configured.)`;
+    }
+    const output = elements.dialogContent.querySelector("#tutor-answer");
+    if (output) output.innerHTML = formatRichText(answer);
+  } catch (_error) {
+    showToast("Could not prepare an explanation.");
+  }
+}
+
+function openChat(topicId) {
+  const entry = findTopicEntry(topicId);
+  if (!entry) return;
+  const { module: mod, topic } = entry;
+  elements.dialogContent.onclick = null;
+  const history = [];
+
+  const quickPrompts = [
+    { label: "Explain simpler", text: "Explain the core ideas of this topic in simpler, intuitive terms with an everyday analogy." },
+    { label: "Most important takeaways", text: "What are the most important concepts and high-yield takeaways in this topic, and why do they matter?" },
+    { label: "Step-by-step walkthrough", text: "Walk me through how the concepts in this topic work step by step." },
+    { label: "Real-world example", text: "Give me a concrete, realistic real-world example applying these concepts." },
+    { label: "Go deeper / advanced", text: "Give me a deeper, university-exam-level explanation including edge cases and trade-offs." },
+    { label: "Connect to other topics", text: "How does this topic connect to the other topics in this module?" }
+  ];
+
+  const render = (busy = false) => {
+    elements.dialogContent.innerHTML = dialogFrame("AI TEACHING ASSISTANT", `
+      <h2>Ask anything about ${escapeHtml(topic.title)}</h2>
+      <p class="dialog-subtitle">Grounded in your notes with expanded explanations, examples, and cross-topic links.</p>
+      <div style="display:flex;gap:0.4rem;flex-wrap:wrap;margin-bottom:0.75rem;">
+        ${quickPrompts.map((qp, idx) => `<button type="button" class="button button-secondary" style="font-size:0.78rem;padding:0.35rem 0.65rem;" data-quick-prompt="${idx}" ${busy ? "disabled" : ""}>${escapeHtml(qp.label)}</button>`).join("")}
+      </div>
+      <div class="chat-thread" id="chat-thread" aria-live="polite">${history.length ? history.map(item => `
+        <div class="chat-message ${item.role === "user" ? "from-user" : "from-tutor"}">
+          <span>${item.role === "user" ? "YOU" : "AI TEACHING ASSISTANT"}</span>
+          <div>${formatRichText(item.text)}</div>
+        </div>`).join("") : '<p class="chat-empty">Click a quick prompt above or type your own question below.</p>'}
+        ${busy ? '<div class="chat-message from-tutor"><span>AI TEACHING ASSISTANT</span><p class="loading-dots">Synthesizing explanation…</p></div>' : ""}</div>
+      <form class="chat-form" id="chat-form">
+        <label class="sr-only" for="chat-question">Ask a question</label>
+        <input id="chat-question" name="question" maxlength="2000" placeholder="Ask for simpler explanations, examples, comparisons, or clarification…" required ${busy ? "disabled" : ""}>
+        <button class="button button-primary" type="submit" ${busy ? "disabled" : ""}>Send</button>
+      </form>
+      <div class="dialog-actions" style="margin-top:0.75rem;">
+        <button class="button button-secondary" type="button" data-action="study-lesson" data-topic-id="${escapeHtml(topic.id)}">← Back to lesson</button>
+      </div>`);
+    const thread = elements.dialogContent.querySelector("#chat-thread");
+    if (thread) thread.scrollTop = thread.scrollHeight;
+  };
+
+  const submitQuestion = async (question) => {
+    if (!question.trim()) return;
+    history.push({ role: "user", text: question.trim() });
+    render(true);
+    try {
+      let answer;
+      if (aiAvailable) {
+        try {
+          const crossModuleSummary = (mod.topics || [])
+            .map(t => `- ${t.title}: ${(t.subtopics || []).join(", ")}`)
+            .join("\n");
+          const result = await requestApi("chat", {
+            question: question.trim(),
+            history: history.slice(0, -1),
+            context: topicContext({ ...topic, moduleMeta: mod }),
+            crossModuleSummary,
+            ...getProfile()
+          });
+          answer = result.answer;
+        } catch (error) {
+          answer = `${localSourceAnswer({ ...topic, moduleMeta: mod }, question)}\n\n(Local fallback: ${error.message})`;
+        }
+      } else {
+        answer = localSourceAnswer({ ...topic, moduleMeta: mod }, question);
+      }
+      history.push({ role: "assistant", text: answer });
+    } catch (_error) {
+      history.push({ role: "assistant", text: "I couldn’t prepare a response. Please try again." });
+    }
+    render();
+    const nextInput = elements.dialogContent.querySelector("#chat-question");
+    if (nextInput) nextInput.focus();
+  };
+
+  elements.dialogContent.onclick = event => {
+    const qpBtn = event.target.closest("[data-quick-prompt]");
+    if (qpBtn) {
+      const idx = Number(qpBtn.dataset.quickPrompt);
+      if (quickPrompts[idx]) submitQuestion(quickPrompts[idx].text);
+    }
+  };
+
+  elements.dialogContent.onsubmit = event => {
+    if (!event.target.matches("#chat-form")) return;
+    event.preventDefault();
+    submitQuestion(event.target.elements.question.value);
+  };
+
+  render();
+  openDialog();
+}
+
+function makeLocalFlashcards(topic) {
+  const cards = [];
+  if (topic.lesson?.terminology?.length) {
+    topic.lesson.terminology.forEach(t => cards.push({
+      type: "Definition",
+      difficulty: "Foundational",
+      front: `Define: ${t.term}`,
+      back: t.definition,
+      explanation: "",
+      sourceReference: topic.title
+    }));
+  }
+  if (topic.lesson?.knowledgeChecks?.length) {
+    topic.lesson.knowledgeChecks.forEach(kc => cards.push({
+      type: "Conceptual",
+      difficulty: "Intermediate",
+      front: kc.question,
+      back: kc.answer,
+      explanation: "",
+      sourceReference: topic.title
+    }));
+  }
+  if (!cards.length) {
+    topic.sections.forEach(section => {
+      cards.push({
+        type: "Conceptual",
+        difficulty: "Foundational",
+        front: `What are the core ideas in “${section.title}”?`,
+        back: section.keyPoints?.join("\n") || section.text,
+        explanation: "",
+        sourceReference: section.title
+      });
+    });
+  }
+  return cards;
+}
+
+async function openFlashcards(topicId, forceRegenerate = false) {
+  const entry = findTopicEntry(topicId);
+  if (!entry) return;
+  const { module: mod, topic } = entry;
+  elements.dialogContent.onsubmit = null;
+
+  if (!Array.isArray(topic.flashcards) || !topic.flashcards.length || forceRegenerate) {
+    if (aiAvailable) {
+      elements.dialogContent.innerHTML = dialogFrame("INTELLIGENT FLASHCARD GENERATOR", `
+        <h2>Designing active-recall cards for ${escapeHtml(topic.title)}…</h2>
+        <p class="dialog-subtitle loading-dots">Creating definition, conceptual, comparison, and application cards…</p>
+      `);
+      openDialog();
+      try {
+        const lessonSummary = topic.lesson
+          ? `Objectives: ${(topic.lesson.learningObjectives || []).join("; ")}\nConcepts: ${(topic.lesson.coreConcepts || []).map(c => `${c.title}: ${c.explanation}`).join("\n")}`
+          : "";
+        const result = await requestApi("flashcards", {
+          topic: topic.title,
+          context: topicContext(topic),
+          lessonSummary,
+          ...getProfile()
+        });
+        topic.flashcards = result.cards || [];
+        persistModules();
+      } catch (error) {
+        showToast(`Using local flashcards fallback: ${error.message}`);
+        topic.flashcards = makeLocalFlashcards(topic);
+      }
+    } else {
+      topic.flashcards = makeLocalFlashcards(topic);
+    }
+  }
+
+  const cards = topic.flashcards;
+  let current = 0;
+  let flipped = false;
+
+  const render = () => {
+    const card = cards[current];
+    elements.dialogContent.innerHTML = dialogFrame(`SMART FLASHCARDS · ${escapeHtml(topic.title.toUpperCase())}`, `
+      <div style="display:flex;justify-content:space-between;align-items:center;gap:0.5rem;flex-wrap:wrap;margin-bottom:0.5rem;">
+        <div>
+          <span class="source-pill">${escapeHtml(card.type || "Conceptual")}</span>
+          <span class="source-pill" style="margin-left:4px;">${escapeHtml(card.difficulty || "Intermediate")}</span>
+        </div>
+        <button class="button button-secondary" type="button" style="font-size:0.78rem;padding:0.3rem 0.6rem;" data-action="flash-regenerate">Regenerate deck</button>
+      </div>
+      <button class="flashcard" type="button" style="min-height:210px;">
+        <span class="flash-label">${flipped ? "ANSWER & INTUITION" : "PROMPT"} · CARD ${current + 1} OF ${cards.length}</span>
+        <p style="font-size:1.05rem;line-height:1.55;">${escapeHtml(flipped ? card.back : card.front).replace(/\n/g, "<br>")}</p>
+        ${flipped && card.explanation ? `<small style="display:block;margin-top:0.75rem;padding:0.55rem 0.75rem;border-radius:8px;background:rgba(91,139,101,0.1);line-height:1.45;"><strong>Why this matters:</strong> ${escapeHtml(card.explanation)}</small>` : ""}
+        ${card.sourceReference ? `<small style="display:block;margin-top:0.5rem;opacity:0.65;">Source: ${escapeHtml(card.sourceReference)}</small>` : ""}
+        <span class="flash-hint">Click card to ${flipped ? "see the question" : "reveal the answer"}</span>
+      </button>
+      <div class="dialog-actions" style="margin-top:1rem;">
+        <button class="button button-secondary" type="button" data-action="study-lesson" data-topic-id="${escapeHtml(topic.id)}">← Lesson</button>
+        <button class="button button-secondary" type="button" data-action="flash-prev">← Previous</button>
+        <button class="button button-primary" type="button" data-action="flash-next">${current === cards.length - 1 ? "Start again" : "Next card"} →</button>
+      </div>`);
+  };
+
+  elements.dialogContent.onclick = event => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.classList.contains("flashcard")) { flipped = !flipped; render(); }
+    else if (button.dataset.action === "flash-next") { current = (current + 1) % cards.length; flipped = false; render(); }
+    else if (button.dataset.action === "flash-prev") { current = (current - 1 + cards.length) % cards.length; flipped = false; render(); }
+    else if (button.dataset.action === "flash-regenerate") { openFlashcards(topic.id, true); }
+  };
+
+  render();
+  openDialog();
+}
+
+async function openQuiz(topicId) {
+  const topic = getTopic(topicId);
+  if (!topic) return;
+  elements.dialogContent.onsubmit = null;
+  let questions = [];
+  if (aiAvailable) {
+    elements.dialogContent.innerHTML = dialogFrame("SOURCE-GROUNDED QUIZ", `<h2>Preparing assessment…</h2><p class="dialog-subtitle loading-dots">Building questions from ${escapeHtml(topic.title)}.</p>`);
+    openDialog();
+    try {
+      const result = await requestApi("quiz", { topic: topic.title, context: topicContext(topic), ...getProfile() });
+      questions = result.questions || [];
+    } catch (error) {
+      showToast(`AI quiz unavailable (${error.message}).`);
+    }
+  }
+  if (!questions.length) {
+    showToast("Connect AI mode to generate dynamic assessments for this topic.");
+    return;
+  }
+
+  let current = 0;
+  let score = 0;
+  let answered = false;
+
+  const render = () => {
+    if (current >= questions.length) {
+      elements.dialogContent.innerHTML = dialogFrame("QUICK CHECK", `
+        <h2>Assessment complete.</h2>
+        <p class="dialog-subtitle">You scored ${score} out of ${questions.length} on ${escapeHtml(topic.title)}.</p>
+        <div class="dialog-actions">
+          <button class="button button-secondary" type="button" data-action="study-lesson" data-topic-id="${escapeHtml(topic.id)}">← Back to lesson</button>
+          <button class="button button-secondary" type="button" data-action="quiz-restart">Try again</button>
+          <button class="button button-primary" type="button" data-action="quiz-close">Done</button>
+        </div>`);
+      return;
+    }
+    const q = questions[current];
+    elements.dialogContent.innerHTML = dialogFrame(`QUICK CHECK · ${escapeHtml(topic.title.toUpperCase())}`, `
+      <div class="quiz-progress">QUESTION ${current + 1} OF ${questions.length}</div>
+      <h2 class="quiz-question">${escapeHtml(q.question)}</h2>
+      <div class="quiz-options">${q.options.map((opt, idx) => `
+        <button class="quiz-option" type="button" data-action="quiz-answer" data-correct="${idx === q.answerIndex}">${escapeHtml(opt)}</button>`).join("")}</div>
+      <div class="quiz-feedback" aria-live="polite"></div>
+      <div class="dialog-actions"><span class="quiz-progress">Score: ${score}</span><button class="button button-primary" type="button" data-action="quiz-next" disabled>${current === questions.length - 1 ? "See results" : "Next"} →</button></div>`);
+  };
+
+  elements.dialogContent.onclick = event => {
+    const button = event.target.closest("button");
+    if (!button) return;
+    if (button.dataset.action === "quiz-answer" && !answered) {
+      answered = true;
+      const isCorrect = button.dataset.correct === "true";
+      if (isCorrect) score += 1;
+      elements.dialogContent.querySelectorAll(".quiz-option").forEach(opt => {
+        opt.disabled = true;
+        if (opt.dataset.correct === "true") opt.classList.add("correct");
+      });
+      if (!isCorrect) button.classList.add("incorrect");
+      const q = questions[current];
+      elements.dialogContent.querySelector(".quiz-feedback").textContent = `${isCorrect ? "Correct. " : "Incorrect. "}${q.explanation || ""}`;
+      elements.dialogContent.querySelector('[data-action="quiz-next"]').disabled = false;
+    } else if (button.dataset.action === "quiz-next") { current += 1; answered = false; render(); }
+    else if (button.dataset.action === "quiz-restart") { current = 0; score = 0; answered = false; render(); }
+    else if (button.dataset.action === "quiz-close") closeDialog();
+  };
+
+  render();
+  openDialog();
+}
+
+function downloadStudySheet(topicId) {
+  const topic = getTopic(topicId);
+  if (!topic) return;
+  const l = topic.lesson || {};
+  const lines = [
+    `# ${topic.title}`,
+    topic.moduleMeta?.name ? `**Module:** ${topic.moduleMeta.name} (${topic.moduleMeta.discipline})` : "",
+    "",
+    ...(l.learningObjectives?.length ? ["## Learning Objectives", ...l.learningObjectives.map(o => `- ${o}`), ""] : []),
+    ...(l.introduction ? ["## Introduction", l.introduction, ""] : []),
+    ...(l.coreConcepts?.length ? ["## Core Concepts", ...l.coreConcepts.flatMap(c => [`### ${c.title}`, c.explanation, c.keyTakeaway ? `> **Key takeaway:** ${c.keyTakeaway}` : "", ""])] : []),
+    ...(l.terminology?.length ? ["## Key Terminology", ...l.terminology.map(t => `- **${t.term}:** ${t.definition}`), ""] : []),
+    ...(l.workedExamples?.length ? ["## Worked Examples", ...l.workedExamples.flatMap(ex => [`### ${ex.title}`, ex.problemOrScenario, ex.walkthrough, ex.resultOrTakeaway ? `**Result:** ${ex.resultOrTakeaway}` : "", ""])] : []),
+    ...(l.recap ? ["## Final Recap", l.recap, ""] : [])
+  ].filter(line => line !== null);
+
+  downloadFile(`${safeFilename(topic.title)}-lesson.md`, lines.join("\n"), "text/markdown;charset=utf-8");
+  showToast("Comprehensive lesson downloaded.");
 }
 
 function downloadFile(filename, content, type) {
@@ -646,479 +1258,186 @@ function safeFilename(value) {
   return (value || "studyflow").replace(/[<>:"/\\|?*\u0000-\u001f]/g, "-").trim().slice(0, 100) || "studyflow";
 }
 
-function exportWorkspaceBackup() {
+function studentProfileFromForm(form) {
+  const preset = form.elements.preset.value;
+  return {
+    firstName: form.elements.firstName.value.trim(),
+    degree: form.elements.degree.value.trim(),
+    studyGoal: form.elements.studyGoal.value.trim(),
+    preset: Object.prototype.hasOwnProperty.call(STUDY_PRESETS, preset) ? preset : ""
+  };
+}
+
+function saveStudentProfile(profile) {
   try {
-    const form = elements.dialogContent.querySelector("#student-profile-form");
-    const backup = {
-      format: "studyflow-workspace",
-      version: 1,
-      exportedAt: new Date().toISOString(),
-      topics,
-      courseProfile: getCourseProfile(),
-      studentProfile: form ? studentProfileFromForm(form) : studentProfile
-    };
-    downloadFile(`studyflow-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(backup, null, 2), "application/json");
-    showToast("Workspace backup downloaded.");
-  } catch (error) {
-    console.error("Could not export the Studyflow workspace.", error);
-    showToast("Could not create the workspace backup.");
+    localStorage.setItem(STUDENT_PROFILE_KEY, JSON.stringify(profile));
+    studentProfile = profile;
+    renderStudentProfile();
+    return true;
+  } catch (_error) {
+    showToast("Could not save your student profile.");
+    return false;
   }
 }
 
-function normalizeBackupProfile(value, fields, label) {
-  if (value == null) value = {};
-  if (typeof value !== "object" || Array.isArray(value)) throw new Error(`The ${label} in this backup is invalid.`);
-  return fields.reduce((profile, field) => {
-    const fieldValue = value[field];
-    if (fieldValue !== undefined && typeof fieldValue !== "string") {
-      throw new Error(`The ${label} field “${field}” must be text.`);
+function openStudentProfile() {
+  const presetButtons = Object.entries(STUDY_PRESETS).map(([id, preset]) => `
+    <button class="study-preset${studentProfile.preset === id ? " selected" : ""}" type="button" data-study-preset="${id}">${preset.label}</button>`).join("");
+  elements.dialogContent.innerHTML = dialogFrame("STUDENT PROFILE", `
+    <h2>Make this study space yours.</h2>
+    <p class="dialog-subtitle">Your modules, lessons, and progress stay stored in this browser.</p>
+    <form id="student-profile-form">
+      <div class="student-profile-grid">
+        <label>First name<input name="firstName" type="text" maxlength="60" placeholder="e.g. Tiago"></label>
+        <label>Degree / programme<input name="degree" type="text" maxlength="140" placeholder="e.g. BSc IT Software Engineering"></label>
+        <label class="student-profile-wide">Current study goal<textarea name="studyGoal" rows="3" maxlength="700" placeholder="e.g. Master interaction design and HCI principles for finals"></textarea></label>
+      </div>
+      <input name="preset" type="hidden">
+      <div class="preset-heading">Quick study presets</div>
+      <div class="study-preset-grid">${presetButtons}</div>
+      <div class="workspace-backup-actions">
+        <button class="button button-secondary" type="button" data-action="export-workspace">Export workspace backup (.json)</button>
+        <button class="button button-secondary" type="button" data-action="import-workspace">Import workspace backup (.json)</button>
+      </div>
+      <div class="dialog-actions">
+        <button class="button button-primary" type="submit">Save student profile</button>
+      </div>
+    </form>`);
+
+  const form = elements.dialogContent.querySelector("#student-profile-form");
+  form.elements.firstName.value = studentProfile.firstName;
+  form.elements.degree.value = studentProfile.degree;
+  form.elements.studyGoal.value = studentProfile.studyGoal;
+  form.elements.preset.value = studentProfile.preset;
+  elements.dialogContent.onsubmit = event => {
+    if (!event.target.matches("#student-profile-form")) return;
+    event.preventDefault();
+    if (saveStudentProfile(studentProfileFromForm(form))) {
+      closeDialog();
+      showToast("Student profile saved.");
     }
-    profile[field] = fieldValue || "";
-    return profile;
-  }, {});
+  };
+  openDialog();
 }
 
-function normalizeBackup(value) {
-  if (!value || value.format !== "studyflow-workspace" || value.version !== 1) {
-    throw new Error("This is not a supported Studyflow workspace backup.");
-  }
-  if (!Array.isArray(value.topics)) throw new Error("The backup does not contain a valid topic list.");
-  const seenIds = new Set();
-  const importedTopics = value.topics.map((topic, topicIndex) => {
-    if (!topic || typeof topic.id !== "string" || !topic.id || seenIds.has(topic.id) ||
-      typeof topic.title !== "string" || !Array.isArray(topic.sections)) {
-      throw new Error(`Topic ${topicIndex + 1} in this backup is invalid.`);
-    }
-    seenIds.add(topic.id);
-    const sections = topic.sections.map((section, sectionIndex) => {
-      if (!section || typeof section.title !== "string" || typeof section.text !== "string") {
-        throw new Error(`Section ${sectionIndex + 1} in “${topic.title}” is invalid.`);
-      }
-      if (section.keyPoints !== undefined && (!Array.isArray(section.keyPoints) || section.keyPoints.some(point => typeof point !== "string"))) {
-        throw new Error(`Key points in “${section.title}” must be a list of text.`);
-      }
-      return {
-        id: typeof section.id === "string" ? section.id : `${topic.id}-${sectionIndex}`,
-        title: section.title,
-        text: section.text,
-        keyPoints: section.keyPoints || []
-      };
-    });
-    if (!sections.length) throw new Error(`Topic “${topic.title}” has no sections.`);
-    return {
-      id: topic.id,
-      title: topic.title,
-      category: typeof topic.category === "string" ? topic.category : "Your notes",
-      color: PALETTE[topicIndex % PALETTE.length],
-      createdAt: typeof topic.createdAt === "string" ? topic.createdAt : new Date().toISOString(),
-      sourceMode: typeof topic.sourceMode === "string" ? topic.sourceMode : "Imported notes",
-      sections
-    };
-  });
-  const courseProfile = normalizeBackupProfile(value.courseProfile, ["institution", "course", "level", "assessmentType", "rubric", "pastPaper"], "course profile");
-  const studentProfile = normalizeBackupProfile(value.studentProfile, ["firstName", "degree", "studyGoal", "preset"], "student profile");
-  if (studentProfile.preset && !Object.prototype.hasOwnProperty.call(STUDY_PRESETS, studentProfile.preset)) {
-    throw new Error("The student profile uses an unknown study preset.");
-  }
-  return { topics: importedTopics, courseProfile, studentProfile };
+function applyStudyPreset(presetId) {
+  if (!Object.prototype.hasOwnProperty.call(STUDY_PRESETS, presetId)) return;
+  const form = elements.dialogContent.querySelector("#student-profile-form");
+  if (!form) return;
+  form.elements.studyGoal.value = STUDY_PRESETS[presetId].goal;
+  form.elements.preset.value = presetId;
+  saveStudentProfile(studentProfileFromForm(form));
+  showToast(`${STUDY_PRESETS[presetId].label} preset applied.`);
+}
+
+function exportWorkspaceBackup() {
+  const backup = {
+    format: "studyflow-workspace",
+    version: 2,
+    exportedAt: new Date().toISOString(),
+    modules,
+    courseProfile: getCourseProfile(),
+    studentProfile
+  };
+  downloadFile(`studyflow-backup-${new Date().toISOString().slice(0, 10)}.json`, JSON.stringify(backup, null, 2), "application/json");
+  showToast("Workspace backup downloaded.");
 }
 
 async function importWorkspaceBackup(file) {
   if (!file) return;
   try {
-    if (file.size > 20 * 1024 * 1024) throw new Error("Workspace backups must be smaller than 20 MB.");
-    const backup = normalizeBackup(JSON.parse(await file.text()));
-    if (!window.confirm("Importing this backup replaces the topics and profiles saved in this browser. Continue?")) return;
-
-    const records = [
-      [STORAGE_KEY, JSON.stringify(backup.topics)],
-      [PROFILE_KEY, JSON.stringify(backup.courseProfile)],
-      [STUDENT_PROFILE_KEY, JSON.stringify(backup.studentProfile)]
-    ];
-    const previous = records.map(([key]) => [key, localStorage.getItem(key)]);
-    try {
-      records.forEach(([key, data]) => localStorage.setItem(key, data));
-    } catch (error) {
-      previous.forEach(([key, data]) => {
-        try {
-          if (data === null) localStorage.removeItem(key);
-          else localStorage.setItem(key, data);
-        } catch (restoreError) {
-          console.error(`Could not restore ${key} after a failed workspace import.`, restoreError);
-        }
-      });
-      throw error;
+    const parsed = JSON.parse(await file.text());
+    if (parsed.format !== "studyflow-workspace" || !Array.isArray(parsed.modules)) {
+      throw new Error("Unsupported or invalid workspace backup file.");
     }
-
-    topics = backup.topics;
-    studentProfile = backup.studentProfile;
-    activeTopicId = null;
-    loadProfile();
-    renderStudentProfile();
+    if (!window.confirm("Replace your current browser workspace with this backup?")) return;
+    modules = parsed.modules;
+    persistModules();
     renderTopics();
-    elements.breadcrumb.textContent = "My library";
     closeDialog();
     showToast("Workspace backup imported.");
   } catch (error) {
-    console.error("Could not import the Studyflow workspace.", error);
-    showToast(error.message || "Could not import this workspace backup.");
+    showToast(error.message || "Could not import backup.");
   } finally {
     elements.workspaceImportFile.value = "";
   }
 }
 
-function downloadStudySheet(topicId) {
-  const topic = getTopic(topicId);
-  if (!topic) return;
-  const course = studentProfile.degree || getCourseProfile().course;
-  const lines = [
-    `# ${topic.title}`,
-    "",
-    course ? `**Course:** ${course}` : "",
-    studentProfile.studyGoal ? `**Study goal:** ${studentProfile.studyGoal}` : "",
-    `**Sections:** ${topic.sections.length}`,
-    "",
-    ...topic.sections.flatMap(section => [
-      `## ${section.title}`,
-      "",
-      section.text,
-      "",
-      ...(section.keyPoints?.length ? ["### Key points", "", ...section.keyPoints.map(point => `- ${point}`), ""] : [])
-    ])
-  ];
-  downloadFile(`${safeFilename(topic.title)}-study-sheet.md`, lines.join("\n"), "text/markdown;charset=utf-8");
-  showToast("Study sheet downloaded.");
-}
-
-function openTopic(topicId) {
-  const topic = getTopic(topicId);
-  if (!topic) return;
-  elements.dialogContent.onclick = null;
-  elements.dialogContent.onsubmit = null;
-  activeTopicId = topic.id;
-  renderTopics();
-  elements.breadcrumb.textContent = topic.title;
-  const sectionMarkup = topic.sections.map(section => `
-    <div class="lesson-label">${escapeHtml(section.title.toUpperCase())}</div>
-    <div class="lesson-block">${escapeHtml(section.text)}</div>
-    ${section.keyPoints?.length ? `<ul class="lesson-list">${section.keyPoints.map(point => `<li>${escapeHtml(point)}</li>`).join("")}</ul>` : ""}`).join("");
-  elements.dialogContent.innerHTML = dialogFrame("YOUR NOTES, MADE EASIER TO FOLLOW", `
-    <h2>${escapeHtml(topic.title)}</h2>
-    <p class="dialog-subtitle">A guided walkthrough using the notes you shared. Take it section by section, and come back to anything that needs another look. <span class="source-pill">Source: ${escapeHtml(topic.sourceMode || "your saved notes")}</span></p>
-    ${sectionMarkup}
-    <div class="dialog-actions">
-      <button class="button button-secondary" type="button" data-action="explain" data-topic-id="${escapeHtml(topic.id)}">Explain a key idea</button>
-      <button class="button button-secondary" type="button" data-action="chat" data-topic-id="${escapeHtml(topic.id)}">Ask the tutor</button>
-      <button class="button button-secondary" type="button" data-action="flashcards" data-topic-id="${escapeHtml(topic.id)}">Practice flashcards</button>
-      <button class="button button-secondary" type="button" data-action="download-study-sheet" data-topic-id="${escapeHtml(topic.id)}">Download study sheet (.md)</button>
-      <button class="button button-primary" type="button" data-action="quiz" data-topic-id="${escapeHtml(topic.id)}">Check my understanding <span aria-hidden="true">→</span></button>
-      <button class="button button-danger" type="button" data-action="delete-topic" data-topic-id="${escapeHtml(topic.id)}">Delete topic</button>
-    </div>`);
-  openDialog();
-}
-
-function localSourceAnswer(topic, prompt) {
-  const terms = prompt.toLowerCase().split(/[^a-z0-9]+/).filter(word => word.length > 3);
-  const matches = topic.sections.map(section => ({
-    section,
-    score: terms.reduce((score, term) => score + ((section.title + " " + section.text).toLowerCase().includes(term) ? 1 : 0), 0)
-  })).filter(item => item.score).sort((left, right) => right.score - left.score).slice(0, 2);
-  if (!matches.length) {
-    return "I can’t find enough information about that in the notes you shared. Add a relevant source section and I can help connect the ideas.";
-  }
-  return `Here’s what your notes say:\n\n${matches.map(item => `${item.section.title}: ${item.section.keyPoints?.slice(0, 2).join(" ") || item.section.text.slice(0, 600)}`).join("\n\n")}\n\nI’m keeping this answer within your source material.`;
-}
-
-async function explainTopic(topicId) {
-  const topic = getTopic(topicId);
-  if (!topic) return;
-  elements.dialogContent.onclick = null;
-  elements.dialogContent.onsubmit = null;
-  elements.dialogContent.innerHTML = dialogFrame("SOURCE-GROUNDED EXPLANATION", `
-    <h2>Let’s make it clearer.</h2>
-    <p class="dialog-subtitle">A guided explanation of ${escapeHtml(topic.title)}, using only the material in this topic.</p>
-    <div class="tutor-answer" id="tutor-answer" aria-live="polite"><span class="loading-dots">Preparing an explanation…</span></div>
-    <div class="source-caption">Source: ${escapeHtml(topic.sections.map(section => section.title).join(", "))}</div>`);
-  openDialog();
-  const sections = topic.sections.map(section => ({ title: section.title }));
-  try {
-    let answer;
-    if (aiAvailable) {
-      try {
-        const result = await requestApi("explain", {
-          topic: topic.title,
-          context: topicContext(topic),
-          sections,
-          ...getProfile()
-        });
-        answer = result.answer;
-      } catch (error) {
-        answer = `${localSourceAnswer(topic, topic.title)}\n\n(Local demo answer — AI is unavailable.)`;
-        showToast(`Using local source notes: ${error.message}`);
-      }
-    } else {
-      answer = `${localSourceAnswer(topic, topic.title)}\n\n(Local demo answer — AI is not configured.)`;
-    }
-    const output = elements.dialogContent.querySelector("#tutor-answer");
-    if (output) output.textContent = answer;
-  } catch (_error) {
-    showToast("Could not prepare an explanation from these notes.");
-  }
-}
-
-function openChat(topicId) {
-  const topic = getTopic(topicId);
-  if (!topic) return;
-  elements.dialogContent.onclick = null;
-  const history = [];
-  const render = (busy = false) => {
-    elements.dialogContent.innerHTML = dialogFrame("ASK YOUR SOURCE-GROUNDED TUTOR", `
-      <h2>Curious about something?</h2>
-      <p class="dialog-subtitle">Ask a follow-up. Answers use only the notes in <strong>${escapeHtml(topic.title)}</strong>.</p>
-      <div class="chat-thread" id="chat-thread" aria-live="polite">${history.length ? history.map(item => `
-        <div class="chat-message ${item.role === "user" ? "from-user" : "from-tutor"}">
-          <span>${item.role === "user" ? "YOU" : "TUTOR · YOUR NOTES"}</span><p>${escapeHtml(item.text)}</p>
-        </div>`).join("") : '<p class="chat-empty">Your conversation will appear here. If the notes don’t contain an answer, the tutor will say so.</p>'}
-        ${busy ? '<div class="chat-message from-tutor"><span>TUTOR</span><p class="loading-dots">Thinking from your notes…</p></div>' : ""}</div>
-      <form class="chat-form" id="chat-form">
-        <label class="sr-only" for="chat-question">Ask a question about your notes</label>
-        <input id="chat-question" name="question" maxlength="2000" placeholder="Ask a question about this topic…" required ${busy ? "disabled" : ""}>
-        <button class="button button-primary" type="submit" ${busy ? "disabled" : ""}>Send</button>
-      </form>
-      <div class="source-caption">Source material: ${escapeHtml(topic.sections.map(section => section.title).join(", "))}</div>`);
-    const thread = elements.dialogContent.querySelector("#chat-thread");
-    if (thread) thread.scrollTop = thread.scrollHeight;
-  };
-  render();
-  openDialog();
-  elements.dialogContent.onsubmit = async event => {
-    if (!event.target.matches("#chat-form")) return;
-    event.preventDefault();
-    const input = event.target.elements.question;
-    const question = input.value.trim();
-    if (!question) return;
-    history.push({ role: "user", text: question });
-    render(true);
-    try {
-      let answer;
-      if (aiAvailable) {
-        try {
-          const result = await requestApi("chat", {
-            question,
-            history: history.slice(0, -1),
-            context: topicContext(topic),
-            ...getProfile()
-          });
-          answer = result.answer;
-        } catch (error) {
-          answer = `${localSourceAnswer(topic, question)}\n\n(Local demo answer — AI is unavailable.)\n\nAI request error: ${error.message}`;
-          showToast(`Using local source notes: ${error.message}`);
-        }
-      } else {
-        answer = `${localSourceAnswer(topic, question)}\n\n(Local demo answer — AI is not configured.)`;
-      }
-      history.push({ role: "assistant", text: answer });
-    } catch (_error) {
-      history.push({ role: "assistant", text: "I couldn’t prepare a response. Please try again." });
-    }
-    render();
-    const nextInput = elements.dialogContent.querySelector("#chat-question");
-    if (nextInput) nextInput.focus();
-  };
-}
-
-function makeFlashcards(topic) {
-  return topic.sections.map(section => {
-    const definition = section.text.match(/^\s*([^:\n]{2,70}):\s*(.+)$/s);
-    return definition
-      ? { front: definition[1].trim(), back: definition[2].trim() }
-      : { front: `What should you remember about “${section.title}”?`, back: section.keyPoints?.join("\n") || section.text };
-  });
-}
-
-function openFlashcards(topicId) {
-  const topic = getTopic(topicId);
-  if (!topic || !topic.sections.length) return;
-  elements.dialogContent.onsubmit = null;
-  const cards = makeFlashcards(topic);
-  let current = 0;
-  let flipped = false;
-
-  const render = () => {
-    const card = cards[current];
-    elements.dialogContent.innerHTML = dialogFrame(`FLASHCARDS · ${escapeHtml(topic.title.toUpperCase())}`, `
-      <h2>One idea at a time.</h2>
-      <p class="dialog-subtitle">Tap the card to reveal what your notes say.</p>
-      <button class="flashcard" type="button" aria-label="${flipped ? "Show prompt" : "Reveal answer"}">
-        <span class="flash-label">${flipped ? "YOUR NOTES" : "PROMPT"} · ${current + 1} OF ${cards.length}</span>
-        <p>${escapeHtml(flipped ? card.back : card.front).replace(/\n/g, "<br>")}</p>
-        <span class="flash-hint">Click to ${flipped ? "see the prompt" : "reveal the answer"}</span>
-      </button>
-      <div class="dialog-actions">
-        <button class="button button-secondary" type="button" data-action="flash-prev">← Previous</button>
-        <button class="button button-primary" type="button" data-action="flash-next">${current === cards.length - 1 ? "Start again" : "Next card"} <span aria-hidden="true">→</span></button>
-      </div>`);
-  };
-
-  elements.dialogContent.onclick = event => {
-    const button = event.target.closest("button");
-    if (!button) return;
-    if (button.classList.contains("flashcard")) {
-      flipped = !flipped;
-      render();
-    } else if (button.dataset.action === "flash-next") {
-      current = (current + 1) % cards.length;
-      flipped = false;
-      render();
-    } else if (button.dataset.action === "flash-prev") {
-      current = (current - 1 + cards.length) % cards.length;
-      flipped = false;
-      render();
-    }
-  };
-
-  render();
-  openDialog();
-}
-
-function quizFacts(topic) {
-  return topic.sections.flatMap(section => (section.keyPoints || [section.text])
-    .map(point => point.replace(/\s+/g, " ").trim())
-    .filter(point => point.length > 12)
-    .map(point => ({ sectionTitle: section.title, text: point })));
-}
-
-async function openQuiz(topicId) {
-  const topic = getTopic(topicId);
-  if (!topic) return;
-  elements.dialogContent.onsubmit = null;
-  let questions = [];
-  let usedAi = false;
-  if (aiAvailable) {
-    elements.dialogContent.innerHTML = dialogFrame("SOURCE-GROUNDED QUIZ", `<h2>Making a quick check…</h2><p class="dialog-subtitle loading-dots">Building questions from your notes.</p>`);
-    openDialog();
-    try {
-      const result = await requestApi("quiz", { topic: topic.title, context: topicContext(topic), ...getProfile() });
-      questions = result.questions || [];
-      usedAi = questions.length > 0;
-      if (!usedAi) {
-        showToast("AI returned no usable questions. Making a local quiz from your notes.");
-      }
-    } catch (error) {
-      showToast(`AI quiz unavailable (${error.message}). Making a local quiz from your notes.`);
-    }
-  }
-  if (!questions.length) {
-    const facts = quizFacts(topic);
-    questions = facts.map((fact, index) => {
-      const distractors = facts.filter((_, factIndex) => factIndex !== index)
-        .map(item => item.text)
-        .filter((text, optionIndex, list) => text !== fact.text && list.indexOf(text) === optionIndex)
-        .slice(0, 3);
-      const placeholders = ["This detail isn’t included in the notes you shared.", "The notes do not state this.", "This was not mentioned in the source."];
-      while (distractors.length < 3) distractors.push(placeholders[distractors.length]);
-      const options = [fact.text, ...distractors.slice(0, 3)].sort((left, right) => left.localeCompare(right));
-      return {
-        question: `Which detail appears in your notes about ${fact.sectionTitle}?`,
-        options,
-        answerIndex: options.indexOf(fact.text),
-        explanation: `Your notes say: ${fact.text}`,
-        source: fact.sectionTitle
-      };
-    });
-  }
-  if (!questions.length) {
-    showToast("There isn’t enough note text here to make a quiz.");
-    return;
-  }
-  let current = 0;
-  let score = 0;
-  let answered = false;
-
-  const render = () => {
-    if (current >= questions.length) {
-      elements.dialogContent.innerHTML = dialogFrame("QUICK CHECK", `
-        <h2>You made it through.</h2>
-        <p class="dialog-subtitle">You got ${score} out of ${questions.length} from ${escapeHtml(topic.title)}. Every pass helps the ideas settle in. ${escapeHtml(usedAi ? "AI questions grounded in your notes." : "Local demo quiz, grounded in your notes.")}</p>
-        <div class="dialog-actions"><button class="button button-secondary" type="button" data-action="quiz-restart">Try again</button><button class="button button-primary" type="button" data-action="quiz-close">Done</button></div>`);
-      return;
-    }
-    const question = questions[current];
-    elements.dialogContent.innerHTML = dialogFrame(`QUICK CHECK · ${escapeHtml(topic.title.toUpperCase())}`, `
-      <div class="quiz-progress">QUESTION ${current + 1} OF ${questions.length}</div>
-      <h2 class="quiz-question">${escapeHtml(question.question)}</h2>
-      <div class="quiz-options">${question.options.map((option, index) => `
-        <button class="quiz-option" type="button" data-action="quiz-answer" data-correct="${index === question.answerIndex}" data-index="${index}">${escapeHtml(option)}</button>`).join("")}</div>
-      <div class="quiz-feedback" aria-live="polite"></div>
-      <div class="dialog-actions"><span class="quiz-progress">Score: ${score}</span><button class="button button-primary" type="button" data-action="quiz-next" disabled>${current === questions.length - 1 ? "See results" : "Next question"} <span aria-hidden="true">→</span></button></div>`);
-  };
-
-  elements.dialogContent.onclick = event => {
-    const button = event.target.closest("button");
-    if (!button) return;
-    if (button.dataset.action === "quiz-answer" && !answered) {
-      answered = true;
-      const isCorrect = button.dataset.correct === "true";
-      if (isCorrect) score += 1;
-      elements.dialogContent.querySelectorAll(".quiz-option").forEach(option => {
-        option.disabled = true;
-        if (option.dataset.correct === "true") option.classList.add("correct");
-      });
-      if (!isCorrect) button.classList.add("incorrect");
-      const currentQuestion = questions[current];
-      elements.dialogContent.querySelector(".quiz-feedback").textContent = `${isCorrect ? "That’s right. " : "Not quite. "}${currentQuestion.explanation || "The highlighted option is supported by your notes."}${currentQuestion.source ? ` Source: ${currentQuestion.source}.` : ""}`;
-      elements.dialogContent.querySelector('[data-action="quiz-next"]').disabled = false;
-    } else if (button.dataset.action === "quiz-next") {
-      current += 1;
-      answered = false;
-      render();
-    } else if (button.dataset.action === "quiz-restart") {
-      current = 0;
-      score = 0;
-      answered = false;
-      render();
-    } else if (button.dataset.action === "quiz-close") {
-      closeDialog();
-    }
-  };
-
-  render();
-  openDialog();
-}
-
 function openStudyMode() {
-  if (!topics.length) {
-    showToast("Organize some notes first, then your study session will be ready.");
+  const list = allTopics();
+  if (!list.length) {
+    showToast("Organize some module notes first to launch study mode.");
     elements.textarea.focus();
     return;
   }
-  const topic = topics[topics.length - 1];
-  elements.dialogContent.onsubmit = null;
-  elements.dialogContent.innerHTML = dialogFrame("STUDY MODE", `
-    <h2>How would you like to study?</h2>
-    <p class="dialog-subtitle">Pick a path through ${escapeHtml(topic.title)}. You can switch things up whenever you like.</p>
-    <div class="dialog-actions">
-      <button class="button button-secondary" type="button" data-action="study-lesson" data-topic-id="${escapeHtml(topic.id)}">Walk me through it</button>
-      <button class="button button-secondary" type="button" data-action="flashcards" data-topic-id="${escapeHtml(topic.id)}">Flashcards</button>
-      <button class="button button-primary" type="button" data-action="quiz" data-topic-id="${escapeHtml(topic.id)}">Quick quiz</button>
-    </div>`);
-  openDialog();
+  const latest = list[list.length - 1];
+  openTopic(latest.id);
 }
 
 function fillSample() {
-  elements.textarea.value = `Cell Structure and Function
+  elements.textarea.value = `Computer Networks: Dynamic Routing with OSPF
 
-The cell membrane controls what enters and leaves the cell. It is selectively permeable, so some substances pass through while others are blocked.
+Open Shortest Path First (OSPF) is a link-state interior gateway routing protocol standardized in RFC 2328. Unlike distance-vector protocols such as RIPv2 that exchange entire routing tables with neighbors periodically, OSPF routers exchange Link-State Advertisements (LSAs) describing the state of their directly connected interfaces.
 
-Organelles
-The nucleus contains DNA and controls many of the cell's activities. Mitochondria release usable energy through cellular respiration. Ribosomes build proteins.
+Link-State Database and Dijkstra's SPF Algorithm
+Every router within the same OSPF area maintains an identical topological map called the Link-State Database (LSDB). Using the LSDB as input, each router independently runs Dijkstra's Shortest Path First (SPF) algorithm with itself as the root to compute the lowest-cost loop-free paths to all destination networks.
 
-Plant Cells
-Chloroplasts capture light energy for photosynthesis. The cell wall provides extra support and protection. A large central vacuole stores water and helps keep the cell firm.
-
-Remember: plant and animal cells share structures such as a nucleus, cell membrane, and mitochondria. Plant cells also have a cell wall, chloroplasts, and a large central vacuole.`;
+Cost Metric Calculation
+OSPF calculates interface cost using the formula: Cost = Reference Bandwidth / Interface Bandwidth. By default, Cisco IOS sets the reference bandwidth to 100 Mbps (10^8 bps), meaning FastEthernet (100 Mbps) has a cost of 1, while GigabitEthernet (1000 Mbps) also defaults to 1 unless the reference bandwidth is adjusted via auto-cost reference-bandwidth.`;
   updateWordCount();
   organizeNotes();
+}
+
+function updateWordCount() {
+  elements.wordCount.textContent = formatWordCount(countWords(elements.textarea.value));
+}
+
+function showUploadMetadata(filename, metadata) {
+  elements.uploadMeta.hidden = false;
+  elements.uploadMeta.innerHTML = `<span class="upload-file-check" aria-hidden="true">✓</span><strong>${escapeHtml(filename)}</strong><span>${metadata.words.toLocaleString()} words · ${metadata.type}${metadata.pages ? ` · ${metadata.pages} pages` : ""}</span><button type="button" class="upload-remove" aria-label="Dismiss uploaded file">×</button>`;
+}
+
+async function handleUpload(file) {
+  if (!file) return;
+  if (file.size > 12 * 1024 * 1024) {
+    showToast("File exceeds the 12 MB upload limit.");
+    return;
+  }
+  const extension = file.name.split(".").pop().toLowerCase();
+  if (!["pdf", "txt", "docx", "md"].includes(extension)) {
+    showToast("Choose a PDF, DOCX, TXT, or Markdown file.");
+    return;
+  }
+  elements.uploadZone.classList.add("is-loading");
+  try {
+    let text = "";
+    let metadata = { type: extension.toUpperCase(), words: 0 };
+    try {
+      const formData = new FormData();
+      formData.append("file", file);
+      const response = await fetch("/api/upload", { method: "POST", body: formData });
+      const result = await response.json().catch(() => ({}));
+      if (!response.ok) throw new Error(result.error || "Server could not parse file.");
+      text = result.text;
+      metadata = result.metadata;
+      uploadName = result.filename;
+    } catch (error) {
+      if (extension !== "txt" && extension !== "md") throw error;
+      text = await file.text();
+      metadata.words = countWords(text);
+      uploadName = file.name;
+    }
+    if (text.length > 60000) text = text.slice(0, 60000);
+    elements.textarea.value = text;
+    updateWordCount();
+    showUploadMetadata(uploadName, metadata);
+    showToast(`${uploadName} loaded. Click "Build my study guide" to analyse.`);
+  } catch (error) {
+    showToast(error.message || "Could not read that file.");
+  } finally {
+    elements.uploadZone.classList.remove("is-loading");
+    elements.fileInput.value = "";
+  }
 }
 
 elements.textarea.addEventListener("input", updateWordCount);
@@ -1131,195 +1450,61 @@ document.querySelector("#add-topic").addEventListener("click", () => {
 document.querySelectorAll(".nav-link").forEach(button => {
   button.addEventListener("click", () => {
     document.querySelectorAll(".nav-link").forEach(link => link.classList.toggle("active", link === button));
-    if (button.dataset.view === "study") {
-      elements.breadcrumb.textContent = "Study mode";
-      openStudyMode();
-    } else {
-      elements.breadcrumb.textContent = "My library";
-      closeDialog();
-    }
+    if (button.dataset.view === "study") openStudyMode();
+    else { elements.breadcrumb.textContent = "My library"; closeDialog(); }
   });
 });
 elements.topicNav.addEventListener("click", event => {
-  const deleteButton = event.target.closest('[data-action="delete-topic"]');
-  if (deleteButton) {
-    deleteTopic(deleteButton.dataset.topicId);
-    return;
-  }
-  const button = event.target.closest(".topic-link[data-topic-id]");
-  if (button) openTopic(button.dataset.topicId);
+  const del = event.target.closest('[data-action="delete-topic"]');
+  if (del) { deleteTopic(del.dataset.topicId); return; }
+  const btn = event.target.closest(".topic-link[data-topic-id]");
+  if (btn) openTopic(btn.dataset.topicId);
 });
 elements.pathContent.addEventListener("click", event => {
-  const deleteButton = event.target.closest('[data-action="delete-topic"]');
-  if (deleteButton) {
-    deleteTopic(deleteButton.dataset.topicId);
-    return;
-  }
-  const button = event.target.closest(".path-topic-open[data-topic-id]");
-  if (button) openTopic(button.dataset.topicId);
+  const del = event.target.closest('[data-action="delete-topic"]');
+  if (del) { deleteTopic(del.dataset.topicId); return; }
+  const btn = event.target.closest(".path-topic-open[data-topic-id]");
+  if (btn) openTopic(btn.dataset.topicId);
 });
 elements.dialogContent.addEventListener("click", event => {
   const button = event.target.closest("button");
   if (!button) return;
-  if (button.classList.contains("dialog-close")) {
-    closeDialog();
-    return;
-  }
-  if (button.dataset.action === "delete-topic") {
-    deleteTopic(button.dataset.topicId);
-    return;
-  }
-  if (button.dataset.action === "download-study-sheet") {
-    downloadStudySheet(button.dataset.topicId);
-    return;
-  }
-  if (button.dataset.action === "export-workspace") {
-    exportWorkspaceBackup();
-    return;
-  }
-  if (button.dataset.action === "import-workspace") {
-    elements.workspaceImportFile.click();
-    return;
-  }
-  if (button.dataset.studyPreset) {
-    applyStudyPreset(button.dataset.studyPreset);
-    return;
-  }
-  if (button.dataset.action === "flashcards") openFlashcards(button.dataset.topicId);
-  if (button.dataset.action === "quiz") openQuiz(button.dataset.topicId);
-  if (button.dataset.action === "study-lesson") openTopic(button.dataset.topicId);
-  if (button.dataset.action === "explain") explainTopic(button.dataset.topicId);
-  if (button.dataset.action === "chat") openChat(button.dataset.topicId);
+  const action = button.dataset.action;
+  const topicId = button.dataset.topicId;
+  if (button.classList.contains("dialog-close")) closeDialog();
+  else if (action === "study-lesson") openTopic(topicId);
+  else if (action === "regenerate-lesson") openTopic(topicId, true);
+  else if (action === "delete-topic") deleteTopic(topicId);
+  else if (action === "download-study-sheet") downloadStudySheet(topicId);
+  else if (action === "export-workspace") exportWorkspaceBackup();
+  else if (action === "import-workspace") elements.workspaceImportFile.click();
+  else if (button.dataset.studyPreset) applyStudyPreset(button.dataset.studyPreset);
+  else if (action === "flashcards") openFlashcards(topicId);
+  else if (action === "quiz") openQuiz(topicId);
+  else if (action === "explain") explainTopic(topicId);
+  else if (action === "explain-mode") explainTopic(topicId, button.dataset.mode);
+  else if (action === "chat") openChat(topicId);
 });
-elements.dialog.addEventListener("click", event => {
-  if (event.target === elements.dialog) closeDialog();
+elements.dialog.addEventListener("click", event => { if (event.target === elements.dialog) closeDialog(); });
+
+document.querySelector("#choose-file").addEventListener("click", e => { e.stopPropagation(); elements.fileInput.click(); });
+elements.uploadZone.addEventListener("click", e => {
+  if (e.target.closest(".upload-remove")) { elements.uploadMeta.hidden = true; uploadName = ""; return; }
+  if (!e.target.closest("button")) elements.fileInput.click();
 });
+elements.fileInput.addEventListener("change", () => handleUpload(elements.fileInput.files[0]));
+["dragenter", "dragover"].forEach(t => elements.uploadZone.addEventListener(t, e => { e.preventDefault(); elements.uploadZone.classList.add("is-dragging"); }));
+["dragleave", "drop"].forEach(t => elements.uploadZone.addEventListener(t, e => { e.preventDefault(); elements.uploadZone.classList.remove("is-dragging"); }));
+elements.uploadZone.addEventListener("drop", e => handleUpload(e.dataTransfer.files[0]));
 
-function updateWordCount() {
-  elements.wordCount.textContent = formatWordCount(countWords(elements.textarea.value));
-}
-
-function showUploadMetadata(filename, metadata) {
-  elements.uploadMeta.hidden = false;
-  elements.uploadMeta.innerHTML = `<span class="upload-file-check" aria-hidden="true">✓</span><strong>${escapeHtml(filename)}</strong><span>${metadata.words.toLocaleString()} words · ${metadata.type}${metadata.pages ? ` · ${metadata.pages} pages` : ""}${metadata.truncated ? " · text shortened to fit" : ""}</span><button type="button" class="upload-remove" aria-label="Dismiss uploaded file">×</button>`;
-}
-
-async function handleUpload(file) {
-  if (!file) return;
-  if (file.size > 12 * 1024 * 1024) {
-    showToast("That file is over the 12 MB upload limit.");
-    return;
-  }
-  const extension = file.name.split(".").pop().toLowerCase();
-  if (!["pdf", "txt", "docx", "md"].includes(extension)) {
-    showToast("Choose a PDF, DOCX, TXT, or Markdown file.");
-    return;
-  }
-  elements.uploadZone.classList.add("is-loading");
-  elements.uploadZone.setAttribute("aria-busy", "true");
-  try {
-    let text = "";
-    let metadata = { type: extension.toUpperCase(), words: 0 };
-    try {
-      const formData = new FormData();
-      formData.append("file", file);
-      const response = await fetch("/api/upload", { method: "POST", body: formData });
-      const result = await response.json().catch(() => ({}));
-      if (!response.ok) throw new Error(result.error || "The server could not read this file.");
-      text = result.text;
-      metadata = result.metadata;
-      uploadName = result.filename;
-    } catch (error) {
-      if (extension !== "txt" && extension !== "md") {
-        throw new Error(`PDF and DOCX extraction needs the Studyflow server. ${error.message}`);
-      }
-      text = await file.text();
-      metadata.words = countWords(text);
-      uploadName = file.name;
-      setMode(false, "Local demo mode · server unavailable");
-      showToast("Text file read in local demo mode. PDF/DOCX extraction needs the server.");
-    }
-    if (!text.trim()) throw new Error("No readable text was found in that file.");
-    if (text.length > 60000) {
-      text = text.slice(0, 60000);
-      metadata.truncated = true;
-    }
-    metadata.words = countWords(text);
-    elements.textarea.value = text;
-    updateWordCount();
-    showUploadMetadata(uploadName, metadata);
-    elements.textarea.focus();
-    showToast(`${uploadName} is ready. Review the extracted text, then organize your notes.`);
-  } catch (error) {
-    showToast(error.message || "Could not read that file.");
-  } finally {
-    elements.uploadZone.classList.remove("is-loading");
-    elements.uploadZone.removeAttribute("aria-busy");
-    elements.fileInput.value = "";
-  }
-}
-
-function bindUpload() {
-  const chooseFile = document.querySelector("#choose-file");
-  chooseFile.addEventListener("click", event => {
-    event.stopPropagation();
-    elements.fileInput.click();
-  });
-  elements.uploadZone.addEventListener("click", event => {
-    if (event.target.closest(".upload-remove")) {
-      elements.uploadMeta.hidden = true;
-      uploadName = "";
-      return;
-    }
-    if (!event.target.closest("button")) elements.fileInput.click();
-  });
-  elements.uploadZone.addEventListener("keydown", event => {
-    if (event.key === "Enter" || event.key === " ") {
-      event.preventDefault();
-      elements.fileInput.click();
-    }
-  });
-  elements.fileInput.addEventListener("change", () => handleUpload(elements.fileInput.files[0]));
-  ["dragenter", "dragover"].forEach(type => elements.uploadZone.addEventListener(type, event => {
-    event.preventDefault();
-    elements.uploadZone.classList.add("is-dragging");
-  }));
-  ["dragleave", "drop"].forEach(type => elements.uploadZone.addEventListener(type, event => {
-    event.preventDefault();
-    elements.uploadZone.classList.remove("is-dragging");
-  }));
-  elements.uploadZone.addEventListener("drop", event => handleUpload(event.dataTransfer.files[0]));
-  elements.uploadMeta.addEventListener("click", event => {
-    if (!event.target.closest(".upload-remove")) return;
-    elements.uploadMeta.hidden = true;
-    uploadName = "";
-  });
-}
-
-function bindProfile() {
-  loadProfile();
-  document.querySelectorAll(".profile-grid input, .profile-grid select, .profile-grid textarea").forEach(field => {
-    field.addEventListener("input", () => {
-      try {
-        localStorage.setItem(PROFILE_KEY, JSON.stringify(getProfile()));
-      } catch (_error) {
-        showToast("Study profile could not be saved in this browser.");
-      }
-    });
-    field.addEventListener("change", () => {
-      try {
-        localStorage.setItem(PROFILE_KEY, JSON.stringify(getProfile()));
-      } catch (_error) {
-        showToast("Study profile could not be saved in this browser.");
-      }
-    });
-  });
-}
-
-bindUpload();
-bindProfile();
+loadProfile();
+document.querySelectorAll(".profile-grid input, .profile-grid select, .profile-grid textarea").forEach(field => {
+  field.addEventListener("input", () => localStorage.setItem(PROFILE_KEY, JSON.stringify(getProfile())));
+  field.addEventListener("change", () => localStorage.setItem(PROFILE_KEY, JSON.stringify(getProfile())));
+});
 elements.studentProfileButton.addEventListener("click", openStudentProfile);
 elements.workspaceImportFile.addEventListener("change", () => importWorkspaceBackup(elements.workspaceImportFile.files[0]));
+
 checkApiStatus();
 renderTopics();
 renderStudentProfile();

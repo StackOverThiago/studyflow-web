@@ -260,6 +260,15 @@ h1 { color: #25332d; font-family: Manrope, sans-serif; font-size: clamp(34px, 4v
 .profile-wide { grid-column: 1 / -1; }
 .button:disabled { cursor: wait; opacity: .65; transform: none; }
 .source-pill { background: #f1f6f1; border-radius: 10px; color: #64836b; display: inline-block; font-size: 9px; margin-left: 4px; padding: 3px 7px; }
+.module-analysis { background: #f7f9f6; border: 1px solid #e7ede7; border-radius: 9px; display: grid; gap: 8px; grid-template-columns: repeat(3, minmax(0, 1fr)); margin: 14px 0 18px; padding: 11px; }
+.module-analysis div { min-width: 0; }
+.module-analysis span { color: #84968a; display: block; font-size: 8px; font-weight: 700; letter-spacing: .8px; margin-bottom: 4px; }
+.module-analysis strong { color: #4d5d52; display: block; font-size: 11px; line-height: 1.4; overflow-wrap: anywhere; }
+.lesson-table { border: 1px solid #e7ece7; border-radius: 8px; display: grid; margin: 8px 0 14px; overflow: hidden; }
+.lesson-table div { display: grid; gap: 12px; grid-template-columns: minmax(110px, .35fr) 1fr; padding: 10px 12px; }
+.lesson-table div + div { border-top: 1px solid #edf1ed; }
+.lesson-table strong { color: #4b5d51; font-size: 12px; }
+.lesson-table span { color: #657269; font-size: 12px; line-height: 1.6; }
 .tutor-answer { background: #f7f9f6; border-left: 3px solid #7cab87; border-radius: 0 8px 8px 0; color: #56635a; font-size: 12px; line-height: 1.85; min-height: 100px; padding: 15px 16px; white-space: pre-wrap; }
 .source-caption { color: #8d9a8f; font-size: 9px; line-height: 1.6; margin-top: 12px; }
 .loading-dots { color: #8c9a8e; }
