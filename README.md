@@ -1,40 +1,33 @@
 # Studyflow
 
-Studyflow is a student study workspace with an optional Node.js API for source-grounded AI explanations, organization, quizzes, follow-up chat, and document extraction. Notes and profiles are stored in the browser's local storage. API keys stay on the server.
+A source-grounded AI study workspace that turns raw university lecture notes (`PDF`, `DOCX`, `TXT`, `MD`) into structured study guides, active-recall flashcards, and scored quizzes—without hallucinating outside your syllabus.
 
-## Requirements
+**Live Demo:** [studyflow-web-alpha.vercel.app](https://studyflow-web-alpha.vercel.app)
 
-- Node.js 18.11 or newer (includes `fetch` and the optional `--watch` dev mode)
-- An OpenAI-compatible API key for live AI features (optional; local demo mode works without one)
+---
 
-## Run locally
+## Why I Built It
+Paste lecture notes into a normal chatbot and two things happen: it mixes your professor's syllabus with outside internet facts, and everything gets buried in an endless chat scroll. I built Studyflow to solve both—enforcing strict source-grounding on the backend and returning validated JSON schemas that render as interactive study modules.
 
-```powershell
-npm install
-Copy-Item .env.example .env
-```
+## Key Features
+- **Document Extraction Pipeline:** Upload `PDF`, `DOCX`, `TXT`, or Markdown files (up to 12 MB / 60,000 chars) parsed server-side via `Multer`, `pdf-parse`, and `mammoth`.
+- **Source-Grounded AI Outputs:** Enforces system-prompt boundaries and structured JSON responses for topic breakdowns, section-cited explanations, flashcards, and multiple-choice quizzes.
+- **Persistent Student Profile:** Saves courses, rubrics, and study progress in `localStorage` with one-click JSON backup export/import and Markdown study sheet downloads.
+- **Offline / Demo Fallback:** Automatically switches to deterministic local note splitting and quiz generation if no API key is configured or the upstream endpoint spikes.
 
-Set `OPENAI_API_KEY` in `.env` to enable AI. The example configuration uses Gemini's OpenAI-compatible endpoint and `gemini-3.5-flash-lite`; set `OPENAI_MODEL` and `OPENAI_BASE_URL` to match another OpenAI-compatible provider. `PORT` defaults to `8080`.
+## Tech Stack
+- **Frontend:** Vanilla JavaScript, HTML5, CSS3 (`localStorage` state management)
+- **Backend:** Node.js, Express, Multer, `pdf-parse`, `mammoth`
+- **AI & Deployment:** Gemini API (OpenAI-compatible endpoint), Vercel Serverless Functions
 
-```powershell
-npm start
-```
+---
 
-Open [http://localhost:8080](http://localhost:8080). Do not open `index.html` directly: the API and document upload features require the server. When no key is configured or the API is unreachable, the app clearly switches to local demo processing.
+## Running Locally
 
-## API
+**Prerequisites:** Node.js `18.11+`
 
-- `GET /api/health` — reports whether AI is configured (never returns a key).
-- `POST /api/organize` — JSON `{notes, studentName?, degree?, studyGoal?, studyPreset?, institution?, course?, level?, assessmentType?, rubric?, pastPaper?}`.
-- `POST /api/explain` — JSON `{topic, context, sections?, ...study profile}`.
-- `POST /api/quiz` — JSON `{topic, context, ...study profile}`.
-- `POST /api/chat` — JSON `{question, context, ...study profile}`.
-- `POST /api/upload` — multipart form with `file`; supports PDF, TXT, DOCX, and Markdown up to 12 MB. Text extraction is capped at 60,000 characters. Scanned PDFs without a text layer need OCR first.
-
-All AI endpoints use the configured server-side OpenAI-compatible chat-completions API. The browser never receives the API key. Keep `.env` private and do not commit it.
-
-Topics and study profiles are saved in browser local storage. Use the profile menu to export or import a workspace backup, or download a topic as a Markdown study sheet. Backups are needed to move data between devices; Studyflow does not sync browser storage. When AI is enabled, note text and the relevant study profile are sent to the configured provider to answer the request; Studyflow does not persist API request content on the server.
-
-## Deploy to Vercel
-
-Deploy the project from its repository root. For Gemini, add `OPENAI_API_KEY`, `OPENAI_BASE_URL=https://generativelanguage.googleapis.com/v1beta/openai/`, and `OPENAI_MODEL=gemini-3.5-flash-lite` as Vercel environment variables. Do not deploy the local `.env` file. Vercel serves files from `public/` and routes `/api/*` to the exported Express app in `server.js`. Workspace data remains in each student's browser; use the JSON backup to transfer it between devices.
+1. **Clone & install dependencies:**
+   ```bash
+   git clone [https://github.com/StackOverThiago/studyflow-web.git](https://github.com/StackOverThiago/studyflow-web.git)
+   cd studyflow-web
+   npm install
